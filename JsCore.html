@@ -1,0 +1,2599 @@
+<script>
+window.__sibaktiCoreReady = true;
+
+const ENTITY_WRITE_ROLES = {
+  users: ['SUPERADMIN'],
+  counselorProfiles: ['SUPERADMIN', 'ADMIN_MADRASAH'],
+  students: ['SUPERADMIN', 'GURU_BK', 'WALI_KELAS'],
+  achievements: ['SUPERADMIN', 'GURU_BK', 'WALI_KELAS'],
+  reportCards: ['GURU_BK', 'WALI_KELAS'],
+  attendance: ['SUPERADMIN', 'ADMIN_MADRASAH', 'GURU_BK', 'WALI_KELAS'],
+  services: ['SUPERADMIN', 'ADMIN_MADRASAH', 'GURU_BK'],
+  journals: ['SUPERADMIN', 'ADMIN_MADRASAH', 'GURU_BK'],
+  letters: ['SUPERADMIN', 'ADMIN_MADRASAH', 'GURU_BK'],
+  rplbk: ['SUPERADMIN', 'ADMIN_MADRASAH', 'GURU_BK'],
+  settings: ['SUPERADMIN']
+};
+
+const ENTITY_DELETE_ROLES = {
+  users: ['SUPERADMIN'],
+  counselorProfiles: ['SUPERADMIN', 'ADMIN_MADRASAH'],
+  students: ['SUPERADMIN'],
+  achievements: ['SUPERADMIN'],
+  reportCards: ['GURU_BK', 'WALI_KELAS'],
+  attendance: ['SUPERADMIN', 'ADMIN_MADRASAH', 'GURU_BK'],
+  services: ['SUPERADMIN', 'ADMIN_MADRASAH'],
+  journals: ['SUPERADMIN', 'ADMIN_MADRASAH'],
+  letters: ['SUPERADMIN', 'ADMIN_MADRASAH'],
+  rplbk: ['SUPERADMIN', 'ADMIN_MADRASAH']
+};
+
+const state = {
+  token: localStorage.getItem('sibakti_token') || '',
+  app: null,
+  user: null,
+  dashboard: null,
+  lookups: {},
+  entities: {},
+  rows: {},
+  total: {},
+  page: 'dashboard',
+  selectedStudentId: '',
+  currentPortfolio: null,
+  aiDraft: null,
+  recap: null,
+  counselorProfile: null
+};
+
+document.addEventListener('DOMContentLoaded', boot);
+document.addEventListener('click', handleGlobalClick);
+
+async function boot() {
+  wirePublicForms();
+  state.app = state.app || getBootstrapAppDefaults();
+  renderBrand();
+  try {
+    showLogin();
+  } catch (layoutErr) {
+    showFatal(layoutErr.message || 'Layout aplikasi tidak lengkap. Pastikan semua file HTML sudah disalin.');
+    hideBootScreen();
+    return;
+  }
+  hideBootScreen();
+
+  try {
+    const init = await server('appInit', state.token);
+    state.app = init.app;
+    state.user = init.user;
+    state.dashboard = init.dashboard || null;
+    state.counselorProfile = init.counselorProfile || null;
+    state.lookups = init.lookups || {};
+    state.entities = init.entities || {};
+    renderBrand();
+    if (state.user) {
+      showApp();
+      const initial = document.body.dataset.initialView || 'dashboard';
+      go(canOpenPage(initial) ? initial : 'dashboard');
+    } else {
+      state.token = '';
+      localStorage.removeItem('sibakti_token');
+      showLogin();
+    }
+  } catch (err) {
+    state.token = '';
+    localStorage.removeItem('sibakti_token');
+    showLogin();
+    showToast((err.message || 'Sinkronisasi awal belum selesai.') + ' Halaman login tetap dapat digunakan.', true);
+  } finally {
+    hideBootScreen();
+    refreshIcons();
+  }
+}
+
+function getBootstrapAppDefaults() {
+  return {
+    name: 'SIBAKTI Madrasah',
+    subtitle: 'Sistem Bimbingan dan Konseling Terintegrasi di Madrasah',
+    logoUrl: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/Seal_of_the_Ministry_of_Religious_Affairs_of_the_Republic_of_Indonesia.svg/250px-Seal_of_the_Ministry_of_Religious_Affairs_of_the_Republic_of_Indonesia.svg.png',
+    creatorName: 'Arvan Sri Cahya Saputra, S. Pd. Gr.',
+    creatorUnit: 'MTsN 3 Bandung',
+    creatorEmail: 'arvansaputra2707@madrasah.kemenag.go.id',
+    madrasahName: 'Madrasah'
+  };
+}
+
+function hideBootScreen() {
+  const bootScreen = document.getElementById('bootScreen');
+  if (bootScreen) bootScreen.classList.add('is-hidden');
+}
+
+function wirePublicForms() {
+  const loginForm = document.getElementById('loginForm');
+  const registerForm = document.getElementById('registerForm');
+  const initialSetupForm = document.getElementById('initialSetupForm');
+  const showRegisterBtn = document.getElementById('showRegisterBtn');
+  const forgotPasswordBtn = document.getElementById('forgotPasswordBtn');
+  const backToLoginBtn = document.getElementById('backToLoginBtn');
+  const setupBackToLoginBtn = document.getElementById('setupBackToLoginBtn');
+  if (loginForm) loginForm.onsubmit = handleLogin;
+  if (registerForm) registerForm.onsubmit = handleRegister;
+  if (initialSetupForm) initialSetupForm.onsubmit = handleInitialSetup;
+  if (showRegisterBtn) showRegisterBtn.onclick = showRegister;
+  if (forgotPasswordBtn) forgotPasswordBtn.onclick = showForgotPassword;
+  if (backToLoginBtn) backToLoginBtn.onclick = showLogin;
+  if (setupBackToLoginBtn) setupBackToLoginBtn.onclick = showLogin;
+  setupRegionSearch(document);
+  setupSchoolSearch(document);
+}
+
+function server(fnName) {
+  var args = Array.prototype.slice.call(arguments, 1);
+
+  return new Promise(function(resolve, reject) {
+    if (!window.google || !google.script || !google.script.run) {
+      reject(new Error('Aplikasi harus dijalankan sebagai Google Apps Script Web App.'));
+      return;
+    }
+
+    var runner = google.script.run
+      .withSuccessHandler(function(result) {
+        resolve(result);
+      })
+      .withFailureHandler(function(error) {
+        reject(new Error(error && error.message ? error.message : String(error)));
+      });
+
+    if (typeof runner[fnName] !== 'function') {
+      reject(new Error('Fungsi server "' + fnName + '" tidak ditemukan di Apps Script.'));
+      return;
+    }
+
+    runner[fnName].apply(runner, args);
+  });
+}
+
+function showLogin() {
+  const loginView = requireElement('loginView');
+  const appView = requireElement('appView');
+  const form = requireElement('loginForm');
+  const registerView = document.getElementById('registerView');
+  const initialSetupView = document.getElementById('initialSetupView');
+  const showRegisterBtn = document.getElementById('showRegisterBtn');
+  loginView.classList.remove('is-hidden');
+  appView.classList.add('is-hidden');
+  if (registerView) registerView.classList.add('is-hidden');
+  if (initialSetupView) initialSetupView.classList.add('is-hidden');
+  form.onsubmit = handleLogin;
+  if (showRegisterBtn) showRegisterBtn.onclick = showRegister;
+  wirePublicForms();
+  renderBrand();
+  refreshIcons();
+}
+
+function showRegister() {
+  const loginView = requireElement('loginView');
+  const registerView = requireElement('registerView');
+  const appView = document.getElementById('appView');
+  const initialSetupView = document.getElementById('initialSetupView');
+  const registerForm = document.getElementById('registerForm');
+  const backToLoginBtn = document.getElementById('backToLoginBtn');
+  loginView.classList.add('is-hidden');
+  if (appView) appView.classList.add('is-hidden');
+  if (initialSetupView) initialSetupView.classList.add('is-hidden');
+  registerView.classList.remove('is-hidden');
+  if (registerForm) registerForm.onsubmit = handleRegister;
+  if (backToLoginBtn) backToLoginBtn.onclick = showLogin;
+  wirePublicForms();
+  renderBrand();
+  refreshIcons();
+}
+
+function showInitialSetup() {
+  const loginView = requireElement('loginView');
+  const appView = requireElement('appView');
+  const registerView = document.getElementById('registerView');
+  const initialSetupView = requireElement('initialSetupView');
+  const initialSetupForm = requireElement('initialSetupForm');
+  loginView.classList.add('is-hidden');
+  appView.classList.add('is-hidden');
+  if (registerView) registerView.classList.add('is-hidden');
+  initialSetupView.classList.remove('is-hidden');
+  initialSetupForm.onsubmit = handleInitialSetup;
+  wirePublicForms();
+  renderBrand();
+  refreshIcons();
+}
+
+function showApp() {
+  const loginView = requireElement('loginView');
+  const appView = requireElement('appView');
+  const registerView = document.getElementById('registerView');
+  const initialSetupView = document.getElementById('initialSetupView');
+  loginView.classList.add('is-hidden');
+  if (registerView) registerView.classList.add('is-hidden');
+  if (initialSetupView) initialSetupView.classList.add('is-hidden');
+  appView.classList.remove('is-hidden');
+  renderBrand();
+  renderNav();
+  renderUser();
+  const logoutBtn = document.getElementById('logoutBtn');
+  const refreshBtn = document.getElementById('refreshBtn');
+  const mobileNavBtn = document.getElementById('mobileNavBtn');
+  if (logoutBtn) logoutBtn.onclick = handleLogout;
+  if (refreshBtn) refreshBtn.onclick = () => go(state.page);
+  if (mobileNavBtn) mobileNavBtn.onclick = () => document.body.classList.toggle('nav-open');
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const btn = form.querySelector('button[type="submit"]');
+  setBusy(btn, true);
+  try {
+    const data = Object.fromEntries(new FormData(form).entries());
+    const result = await server('login', data);
+    state.token = result.token;
+    state.user = result.user;
+    state.app = result.app || state.app;
+    state.dashboard = result.dashboard;
+    state.counselorProfile = result.counselorProfile || null;
+    localStorage.setItem('sibakti_token', state.token);
+    showToast('Berhasil masuk.');
+    showApp();
+    go('dashboard');
+  } catch (err) {
+    showToast(err.message || 'Login gagal.', true);
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+function showForgotPassword() {
+  openModal('Lupa Password', 'Pemulihan akun', `
+    <form class="form-grid" id="forgotPasswordForm">
+      <label class="wide">
+        <span>Email Terdaftar</span>
+        <input name="identifier" type="email" required placeholder="Masukkan email yang digunakan saat mendaftar">
+      </label>
+      <div class="register-note wide">
+        <i data-lucide="mail"></i>
+        <span>Password sementara akan dikirim ke email yang terdaftar pada akun.</span>
+      </div>
+      <button class="btn btn-primary wide" type="submit">
+        <i data-lucide="send"></i>
+        <span>Kirim Password Sementara</span>
+      </button>
+    </form>
+  `);
+  const form = document.getElementById('forgotPasswordForm');
+  if (!form) return;
+  form.onsubmit = handleForgotPassword;
+}
+
+async function handleForgotPassword(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const btn = form.querySelector('button[type="submit"]');
+  const payload = collectForm(form);
+  setBusy(btn, true);
+  try {
+    const result = await server('requestPasswordReset', payload);
+    closeModal();
+    showToast(result.message || 'Password sementara dikirim ke email terdaftar.');
+  } catch (err) {
+    showToast(err.message || 'Pemulihan password gagal.', true);
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+async function handleRegister(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const btn = form.querySelector('button[type="submit"]');
+  const data = collectRegistrationForm(form);
+  if (data.password !== data.password2) {
+    showToast('Konfirmasi password tidak sama.', true);
+    return;
+  }
+  if (!data.madrasahId) {
+    showToast('Pilih nama madrasah dari hasil pencarian database satuan pendidikan.', true);
+    const schoolInput = form.querySelector('[data-school-search]');
+    if (schoolInput) schoolInput.focus();
+    return;
+  }
+  setBusy(btn, true);
+  try {
+    const result = await server('registerAccount', data);
+    showToast(result.message || 'Registrasi berhasil. Akun menunggu verifikasi Superadmin.');
+    form.reset();
+    showLogin();
+  } catch (err) {
+    showToast(err.message || 'Registrasi gagal.', true);
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+async function handleInitialSetup(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const btn = form.querySelector('button[type="submit"]');
+  if (!validateRegionSelections(form)) return;
+  const data = collectForm(form);
+  setBusy(btn, true);
+  try {
+    const result = await server('initialInstitutionRegister', data);
+    state.token = result.token;
+    state.user = result.user;
+    state.app = result.app || state.app;
+    localStorage.setItem('sibakti_token', state.token);
+    showToast(result.message || 'Registrasi awal berhasil.');
+    showApp();
+    go('settings');
+  } catch (err) {
+    showToast(err.message || 'Registrasi awal gagal.', true);
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+function collectRegistrationForm(form) {
+  const data = collectForm(form);
+  return {
+    nama: data.nama || valueOf('regNama'),
+    email: data.email || valueOf('regEmail'),
+    role: data.role || valueOf('regRole') || '',
+    password: data.password || valueOf('regPassword'),
+    password2: data.password2 || valueOf('regPassword2'),
+    madrasah: data.madrasah || valueOf('regMadrasah'),
+    madrasahId: data.madrasahId || valueOf('regMadrasahId'),
+    madrasahNpsn: data.madrasahNpsn || valueOf('regMadrasahNpsn'),
+    madrasahNsm: data.madrasahNsm || valueOf('regMadrasahNsm'),
+    madrasahSource: data.madrasahSource || valueOf('regMadrasahSource')
+  };
+}
+
+function setupSchoolSearch(scope) {
+  const root = scope || document;
+  root.querySelectorAll('[data-school-search]').forEach(input => {
+    if (input.dataset.schoolReady === 'true') return;
+    input.dataset.schoolReady = 'true';
+    input.dataset.schoolSelectedName = input.value || '';
+    const field = input.closest('[data-school-field]');
+    const menu = field ? field.querySelector('[data-school-results]') : null;
+    if (menu) menu.onmousedown = event => event.preventDefault();
+    input.addEventListener('input', () => {
+      if (input.value !== input.dataset.schoolSelectedName) clearSchoolSelection(field);
+      window.clearTimeout(input._schoolTimer);
+      input._schoolTimer = window.setTimeout(() => loadSchoolOptions(input), 280);
+    });
+    input.addEventListener('focus', () => {
+      const idInput = schoolIdInput(field);
+      if (input.value.trim().length >= 2 && (!idInput || !idInput.value)) loadSchoolOptions(input);
+    });
+    input.addEventListener('blur', () => {
+      window.setTimeout(() => hideSchoolResults(field), 160);
+    });
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Escape') hideSchoolResults(field);
+    });
+  });
+}
+
+async function loadSchoolOptions(input) {
+  const field = input.closest('[data-school-field]');
+  const query = input.value.trim();
+  if (query.length < 2) {
+    showSchoolMessage(field, 'Ketik minimal 2 karakter.');
+    return;
+  }
+  const requestId = String(Date.now());
+  input.dataset.schoolRequest = requestId;
+  showSchoolMessage(field, 'Mencari satuan pendidikan...');
+  try {
+    const result = await server('searchRegisteredSchools', query);
+    if (input.dataset.schoolRequest !== requestId) return;
+    renderSchoolOptions(input, result.rows || []);
+  } catch (err) {
+    showSchoolMessage(field, err.message || 'Database satuan pendidikan belum bisa dimuat.');
+  }
+}
+
+function renderSchoolOptions(input, rows) {
+  const field = input.closest('[data-school-field]');
+  const menu = field ? field.querySelector('[data-school-results]') : null;
+  if (!menu) return;
+  if (!rows.length) {
+    showSchoolMessage(field, 'Tidak ditemukan. Hubungi Superadmin untuk memperbarui master satuan pendidikan.');
+    return;
+  }
+  menu.innerHTML = rows.map(row => {
+    const code = [row.npsn ? `NPSN ${row.npsn}` : '', row.nsm ? `NSM ${row.nsm}` : ''].filter(Boolean).join(' | ');
+    const location = [row.district, row.regency, row.province].filter(Boolean).join(', ');
+    return `
+      <button type="button" class="school-option" data-school='${escapeAttr(JSON.stringify(row))}'>
+        <strong>${escapeHtml(row.name || '-')}</strong>
+        <span>${escapeHtml([row.educationType, row.status, code].filter(Boolean).join(' | ') || 'Satuan pendidikan terdaftar')}</span>
+        <small>${escapeHtml(location || row.address || row.source || '')}</small>
+      </button>
+    `;
+  }).join('');
+  menu.classList.add('is-open');
+  menu.querySelectorAll('.school-option').forEach(button => {
+    button.onclick = () => {
+      try {
+        selectSchoolOption(input, JSON.parse(button.dataset.school || '{}'));
+      } catch (err) {
+        showSchoolMessage(field, 'Data satuan pendidikan tidak valid.');
+      }
+    };
+  });
+}
+
+function selectSchoolOption(input, school) {
+  const field = input.closest('[data-school-field]');
+  input.value = school.name || '';
+  input.dataset.schoolSelectedName = school.name || '';
+  setSchoolFieldValue(field, '[data-school-id]', school.schoolId);
+  setSchoolFieldValue(field, '[data-school-npsn]', school.npsn);
+  setSchoolFieldValue(field, '[data-school-nsm]', school.nsm);
+  setSchoolFieldValue(field, '[data-school-source]', school.source);
+  const note = field ? field.querySelector('[data-school-selection]') : null;
+  if (note) {
+    const code = school.npsn ? `NPSN ${school.npsn}` : school.nsm ? `NSM ${school.nsm}` : 'ID master tersedia';
+    note.textContent = `${code} | ${school.source || 'SIBAKTI'}${school.regency ? ` | ${school.regency}` : ''}`;
+  }
+  hideSchoolResults(field);
+}
+
+function clearSchoolSelection(field) {
+  if (!field) return;
+  ['[data-school-id]', '[data-school-npsn]', '[data-school-nsm]', '[data-school-source]'].forEach(selector => {
+    setSchoolFieldValue(field, selector, '');
+  });
+  const note = field.querySelector('[data-school-selection]');
+  if (note) note.textContent = 'Ketik minimal 2 karakter, lalu pilih satuan pendidikan dari hasil pencarian.';
+}
+
+function setSchoolFieldValue(field, selector, value) {
+  const element = field ? field.querySelector(selector) : null;
+  if (element) element.value = value || '';
+}
+
+function schoolIdInput(field) {
+  return field ? field.querySelector('[data-school-id]') : null;
+}
+
+function showSchoolMessage(field, message) {
+  const menu = field ? field.querySelector('[data-school-results]') : null;
+  if (!menu) return;
+  menu.innerHTML = `<div class="school-empty">${escapeHtml(message)}</div>`;
+  menu.classList.add('is-open');
+}
+
+function hideSchoolResults(field) {
+  const menu = field ? field.querySelector('[data-school-results]') : null;
+  if (menu) menu.classList.remove('is-open');
+}
+
+function hideAllSchoolResults() {
+  document.querySelectorAll('[data-school-results]').forEach(menu => menu.classList.remove('is-open'));
+}
+
+function setupRegionSearch(scope) {
+  const root = scope || document;
+  root.querySelectorAll('[data-region-input]').forEach(input => {
+    if (input.dataset.regionReady === 'true') return;
+    input.dataset.regionReady = 'true';
+    input.dataset.regionSelectedName = input.value || '';
+    const menu = regionResults(input);
+    if (menu) {
+      menu.onmousedown = event => event.preventDefault();
+    }
+
+    input.addEventListener('input', () => {
+      const idInput = regionIdInput(input);
+      if (idInput && input.value !== input.dataset.regionSelectedName) idInput.value = '';
+      clearChildRegions(input);
+      window.clearTimeout(input._regionTimer);
+      input._regionTimer = window.setTimeout(() => loadRegionOptions(input, input.value.trim()), 260);
+    });
+
+    input.addEventListener('focus', () => {
+      loadRegionOptions(input, input.value.trim());
+    });
+
+    input.addEventListener('keydown', event => {
+      if (event.key === 'Escape') hideRegionResults(input);
+    });
+
+    input.addEventListener('blur', () => {
+      window.setTimeout(() => hideRegionResults(input), 160);
+    });
+  });
+}
+
+function regionIdInput(input) {
+  const label = input.closest('[data-region-field]');
+  return label ? label.querySelector('[data-region-id]') : null;
+}
+
+function regionResults(input) {
+  const label = input.closest('[data-region-field]');
+  return label ? label.querySelector('[data-region-results]') : null;
+}
+
+function regionParentId(input) {
+  const form = input.form;
+  if (!form) return '';
+  if (input.dataset.regionParent) {
+    const parent = form.querySelector(`[name="${input.dataset.regionParent}"]`);
+    return parent ? parent.value : '';
+  }
+  if (input.dataset.regionLevel === 'regency') {
+    const province = form.querySelector('[name="MADRASAH_PROVINSI_ID"]');
+    return province ? province.value : '';
+  }
+  if (input.dataset.regionLevel === 'district') {
+    const regency = form.querySelector('[name="MADRASAH_KABUPATEN_ID"]');
+    return regency ? regency.value : '';
+  }
+  return '';
+}
+
+function regionLabel(input) {
+  const label = input.closest('label');
+  const text = label ? label.querySelector('span') : null;
+  return text ? text.textContent.trim() : 'wilayah';
+}
+
+async function loadRegionOptions(input, query) {
+  const level = input.dataset.regionLevel;
+  const parentId = regionParentId(input);
+  if ((level === 'regency' || level === 'district') && !parentId) {
+    showRegionMessage(input, level === 'regency' ? 'Pilih provinsi terlebih dahulu.' : 'Pilih kabupaten/kota terlebih dahulu.');
+    return;
+  }
+
+  const requestId = String(Date.now());
+  input.dataset.regionRequest = requestId;
+  showRegionMessage(input, 'Memuat pilihan...');
+  try {
+    const result = await server('getRegionOptions', level, parentId, query || '');
+    if (input.dataset.regionRequest !== requestId) return;
+    renderRegionOptions(input, result.rows || []);
+  } catch (err) {
+    showRegionMessage(input, err.message || 'Pilihan wilayah tidak bisa dimuat.');
+  }
+}
+
+function renderRegionOptions(input, rows) {
+  const menu = regionResults(input);
+  if (!menu) return;
+  if (!rows.length) {
+    showRegionMessage(input, 'Tidak ada hasil. Coba kata kunci lain.');
+    return;
+  }
+  menu.innerHTML = rows.map(item => `
+    <button type="button" class="region-option" data-id="${escapeAttr(item.id)}" data-name="${escapeAttr(item.name)}">
+      ${escapeHtml(item.name)}
+    </button>
+  `).join('');
+  menu.classList.add('is-open');
+  menu.querySelectorAll('.region-option').forEach(btn => {
+    btn.onclick = () => selectRegionOption(input, {
+      id: btn.dataset.id || '',
+      name: btn.dataset.name || ''
+    });
+  });
+}
+
+function showRegionMessage(input, message) {
+  const menu = regionResults(input);
+  if (!menu) return;
+  menu.innerHTML = `<div class="region-empty">${escapeHtml(message)}</div>`;
+  menu.classList.add('is-open');
+}
+
+function hideRegionResults(input) {
+  const menu = regionResults(input);
+  if (menu) menu.classList.remove('is-open');
+}
+
+function hideAllRegionResults() {
+  document.querySelectorAll('[data-region-results]').forEach(menu => menu.classList.remove('is-open'));
+}
+
+function selectRegionOption(input, item) {
+  const idInput = regionIdInput(input);
+  input.value = item.name || '';
+  input.dataset.regionSelectedName = item.name || '';
+  if (idInput) idInput.value = item.id || '';
+  clearChildRegions(input);
+  hideRegionResults(input);
+}
+
+function clearChildRegions(input) {
+  const form = input.form;
+  if (!form) return;
+  const names = input.dataset.regionClear
+    ? input.dataset.regionClear.split(',').map(item => item.trim()).filter(Boolean)
+    : input.dataset.regionLevel === 'province'
+    ? ['MADRASAH_KABUPATEN', 'MADRASAH_KABUPATEN_ID', 'MADRASAH_KECAMATAN', 'MADRASAH_KECAMATAN_ID']
+    : input.dataset.regionLevel === 'regency'
+      ? ['MADRASAH_KECAMATAN', 'MADRASAH_KECAMATAN_ID']
+      : [];
+  names.forEach(name => {
+    const field = form.querySelector(`[name="${name}"]`);
+    if (!field) return;
+    field.value = '';
+    if (field.dataset && field.dataset.regionInput !== undefined) field.dataset.regionSelectedName = '';
+  });
+}
+
+function validateRegionSelections(form) {
+  const inputs = Array.from(form.querySelectorAll('[data-region-input]'));
+  for (const input of inputs) {
+    const idInput = regionIdInput(input);
+    const value = input.value.trim();
+    const required = input.required || input.dataset.regionRequired === 'true';
+    if ((required || value) && (!idInput || !idInput.value)) {
+      showToast(`Pilih ${regionLabel(input)} dari hasil pencarian otomatis.`, true);
+      input.focus();
+      return false;
+    }
+  }
+  return true;
+}
+
+function valueOf(id) {
+  const el = document.getElementById(id);
+  return el ? String(el.value || '').trim() : '';
+}
+
+async function handleLogout() {
+  try {
+    await server('logout', state.token);
+  } catch (err) {
+    // Session cleanup should continue locally.
+  }
+  localStorage.removeItem('sibakti_token');
+  state.token = '';
+  state.user = null;
+  state.rows = {};
+  state.counselorProfile = null;
+  showLogin();
+}
+
+function renderBrand() {
+  const app = state.app || {};
+  const logo = app.logoUrl || '';
+  const sidebarMadrasahName = getSidebarMadrasahName_(app);
+  if (app.loginBackgroundUrl) {
+    document.documentElement.style.setProperty('--login-hero-image', cssUrl(app.loginBackgroundUrl));
+  } else {
+    document.documentElement.style.removeProperty('--login-hero-image');
+  }
+  setText('loginTitle', app.name || 'SIBAKTI Madrasah');
+  setText('loginSubtitle', app.subtitle || 'Sistem Bimbingan dan Konseling Terintegrasi di Madrasah');
+  setText('appTitle', app.name || 'SIBAKTI Madrasah');
+  setText('appMadrasah', sidebarMadrasahName);
+  setText('creatorName', app.creatorName || 'Arvan Sri Cahya Saputra, S. Pd. Gr.');
+  setText('creatorMeta', app.creatorUnit || 'MTsN 3 Bandung');
+  setText('creatorEmail', app.creatorEmail || 'arvansaputra2707@madrasah.kemenag.go.id');
+  setText('loginCreator', app.creatorName || 'Arvan Sri Cahya Saputra, S. Pd. Gr.');
+  setText('loginCreatorMeta', `${app.creatorUnit || 'MTsN 3 Bandung'} | ${app.creatorEmail || 'arvansaputra2707@madrasah.kemenag.go.id'}`);
+  setText('registerCreator', app.creatorName || 'Arvan Sri Cahya Saputra, S. Pd. Gr.');
+  setText('registerCreatorMeta', `${app.creatorUnit || 'MTsN 3 Bandung'} | ${app.creatorEmail || 'arvansaputra2707@madrasah.kemenag.go.id'}`);
+  ['loginLogo', 'registerLogo', 'setupLogo', 'appLogo'].forEach(id => {
+    const img = document.getElementById(id);
+    if (img) img.src = logo;
+  });
+}
+
+function getSidebarMadrasahName_(app) {
+  app = app || {};
+  const letterhead = app.letterhead || {};
+  return letterhead.madrasah || app.madrasahName || 'Madrasah';
+}
+
+function cssUrl(value) {
+  const clean = String(value || '').replace(/["\\\n\r]/g, '');
+  return `url("${clean}")`;
+}
+
+function renderUser() {
+  if (!state.user) return;
+  setText('userName', state.user.nama || state.user.email || 'Pengguna');
+  setText('userRole', roleLabel(state.user.role));
+  setText('userInitial', (state.user.nama || state.user.email || 'S').trim().slice(0, 1).toUpperCase());
+}
+
+function renderNav() {
+  const nav = requireElement('navList');
+  const available = NAV_ITEMS.filter(item => item.roles.includes(state.user.role));
+  nav.innerHTML = available.map(item => `
+    <button class="nav-item ${item.id === state.page ? 'active' : ''}" type="button" data-go="${escapeAttr(item.id)}" onclick="return handleNavButtonClick(event, this)">
+      <i data-lucide="${item.icon}"></i>
+      <span>${escapeHtml(item.label)}</span>
+    </button>
+  `).join('');
+  nav.onclick = event => {
+    const goBtn = event.target.closest('[data-go]');
+    if (!goBtn) return;
+    event.preventDefault();
+    go(goBtn.dataset.go);
+  };
+  refreshIcons();
+}
+
+function handleNavButtonClick(event, button) {
+  if (event) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  if (button && button.dataset && button.dataset.go) {
+    go(button.dataset.go);
+  }
+  return false;
+}
+
+function canOpenPage(page) {
+  if (!page) return false;
+  const nav = NAV_ITEMS.find(item => item.id === page);
+  return !!nav && !!state.user && nav.roles.includes(state.user.role);
+}
+
+function go(page) {
+  if (!canOpenPage(page)) page = 'dashboard';
+  state.page = page;
+  document.body.classList.remove('nav-open');
+  renderNav();
+  const nav = NAV_ITEMS.find(item => item.id === page);
+  setText('pageTitle', nav ? nav.label : 'Beranda');
+  setText('pageEyebrow', state.app ? state.app.name : 'SIBAKTI');
+  const fieldSchemas = typeof FIELD_SCHEMAS === 'undefined' ? {} : FIELD_SCHEMAS;
+  const renderer = resolvePageRenderer(page);
+  const fallbackRenderer = resolveCorePageRenderer(page);
+  runPageSafely(function() {
+    if (renderer) return renderer();
+    if (fieldSchemas[page]) return renderManagerPageCore(page);
+    if (typeof renderDashboardPage === 'function') return renderDashboardPage();
+    return setContentFromTemplate('tpl-dashboard');
+  }, renderer === fallbackRenderer ? null : fallbackRenderer);
+}
+
+function resolvePageRenderer(page) {
+  const pageRenderers = (typeof window !== 'undefined' && window.PAGE_RENDERERS) ||
+    (typeof PAGE_RENDERERS === 'undefined' ? {} : PAGE_RENDERERS);
+  if (pageRenderers[page]) return pageRenderers[page];
+  const direct = {
+    dashboard: typeof renderDashboardPage === 'function' ? renderDashboardPage : null,
+    portfolio: typeof renderPortfolioPage === 'function' ? renderPortfolioPage : null,
+    recap: typeof renderRecapPage === 'function' ? renderRecapPage : null,
+    'action-plan-bk': typeof renderActionPlanBKPage === 'function' ? renderActionPlanBKPage : null,
+    'ai-rplbk': typeof renderAiRplbkPage === 'function' ? renderAiRplbkPage : null,
+    'counselor-profile': typeof renderCounselorProfilePage === 'function' ? renderCounselorProfilePage : null,
+    'letterhead-settings': typeof renderLetterheadSettingsPage === 'function' ? renderLetterheadSettingsPage : null,
+    settings: typeof renderSettingsPage === 'function' ? renderSettingsPage : null
+  };
+  return direct[page] || resolveCorePageRenderer(page);
+}
+
+function resolveCorePageRenderer(page) {
+  const core = {
+    dashboard: renderDashboardPageCoreFallback,
+    portfolio: renderPortfolioPageCoreFallback,
+    recap: renderRecapPageCoreFallback,
+    'action-plan-bk': renderActionPlanBKPageCoreFallback,
+    'ai-rplbk': renderAiRplbkPageCoreFallback,
+    'counselor-profile': renderCounselorProfilePageCoreFallback,
+    'letterhead-settings': renderLetterheadSettingsPageCoreFallback
+  };
+  return core[page] || null;
+}
+
+function runPageSafely(renderer, fallbackRenderer) {
+  try {
+    const result = renderer();
+    if (result && typeof result.catch === 'function') {
+      result.catch(function(err) {
+        handlePageRenderFailure(err, fallbackRenderer);
+      });
+    }
+  } catch (err) {
+    handlePageRenderFailure(err, fallbackRenderer);
+  }
+}
+
+function handlePageRenderFailure(err, fallbackRenderer) {
+  console.error(err);
+  if (fallbackRenderer) {
+    try {
+      const result = fallbackRenderer();
+      if (result && typeof result.catch === 'function') {
+        result.catch(function(fallbackErr) {
+          console.error(fallbackErr);
+          showToast(fallbackErr.message || err.message || 'Halaman gagal dimuat.', true);
+        });
+      }
+      return;
+    } catch (fallbackErr) {
+      console.error(fallbackErr);
+      showToast(fallbackErr.message || err.message || 'Halaman gagal dimuat.', true);
+      return;
+    }
+  }
+  showToast(err.message || 'Halaman gagal dimuat.', true);
+}
+
+async function renderManagerPageCore(entity) {
+  const schema = FIELD_SCHEMAS[entity];
+  if (!schema) return;
+  setContentFromTemplate('tpl-manager');
+  const root = document.getElementById('content');
+  root.querySelector('[data-entity-eyebrow]').textContent = schema.eyebrow || 'Data';
+  root.querySelector('[data-entity-title]').textContent = schema.title || 'Data';
+  const canWrite = canWriteEntity(entity);
+  root.querySelectorAll('[data-action="new-row"], [data-action="import-file"], [data-action="download-template"]').forEach(el => {
+    const wrapper = el.closest('.file-btn') || el;
+    wrapper.classList.toggle('is-hidden', !canWrite);
+  });
+  const classFilter = root.querySelector('[data-class-filter]');
+  const usesClassFilter = (schema.display || []).includes('kelas');
+  if (classFilter) classFilter.classList.toggle('is-hidden', !usesClassFilter);
+  if (usesClassFilter) {
+    await ensureStudentOptions();
+    fillClassSelect(classFilter, state.studentOptions);
+  }
+  const search = root.querySelector('[data-search]');
+  let timer = null;
+  if (search) {
+    search.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => loadEntityRowsCore(entity), 260);
+    });
+  }
+  if (classFilter) classFilter.addEventListener('change', () => loadEntityRowsCore(entity));
+  const refreshBtn = root.querySelector('[data-action="refresh-entity"]');
+  if (refreshBtn) refreshBtn.onclick = () => loadEntityRowsCore(entity);
+  const templateBtn = root.querySelector('[data-action="download-template"]');
+  if (templateBtn) templateBtn.onclick = () => downloadTemplate(entity);
+  const printBtn = root.querySelector('[data-action="print-table"]');
+  if (printBtn) printBtn.onclick = () => typeof printTable === 'function' ? printTable(entity, state.rows[entity] || []) : window.print();
+  const newBtn = root.querySelector('[data-action="new-row"]');
+  if (newBtn) newBtn.onclick = () => openRecordModalCore(entity, {});
+  const importInput = root.querySelector('[data-action="import-file"]');
+  if (importInput) importInput.addEventListener('change', event => importEntityFileCore(entity, event));
+  root.addEventListener('click', event => handleManagerActionCore(entity, event));
+  await loadEntityRowsCore(entity);
+}
+
+async function loadEntityRowsCore(entity) {
+  const root = document.getElementById('content');
+  const schema = FIELD_SCHEMAS[entity];
+  const search = root.querySelector('[data-search]') ? root.querySelector('[data-search]').value : '';
+  const kelas = root.querySelector('[data-class-filter]') ? root.querySelector('[data-class-filter]').value : '';
+  const filters = {};
+  if (kelas && schema.display.includes('kelas')) filters.kelas = kelas;
+  const body = root.querySelector('[data-table-body]');
+  if (body) body.innerHTML = '<tr><td colspan="20">Memuat data...</td></tr>';
+  try {
+    const result = await server('listRows', state.token, entity, {
+      limit: 700,
+      search,
+      filters,
+      sortBy: schema.sortBy,
+      sortDir: ['students', 'users'].includes(entity) ? 'asc' : 'desc'
+    });
+    state.rows[entity] = result.rows || [];
+    state.total[entity] = result.total || 0;
+    if (entity === 'students') state.studentOptions = result.rows || [];
+    renderEntityTableCore(entity);
+  } catch (err) {
+    if (body) body.innerHTML = `<tr><td colspan="20">${escapeHtml(err.message || 'Gagal memuat data.')}</td></tr>`;
+  }
+  refreshIcons();
+}
+
+function renderEntityTableCore(entity) {
+  const schema = FIELD_SCHEMAS[entity];
+  const root = document.getElementById('content');
+  const rows = state.rows[entity] || [];
+  const showActions = canWriteEntity(entity) || canDeleteEntity(entity) || ['students', 'rplbk', 'services', 'journals', 'letters'].includes(entity);
+  root.querySelector('[data-table-head]').innerHTML = `
+    <tr>
+      ${schema.display.map(key => `<th>${escapeHtml(labelFor(entity, key))}</th>`).join('')}
+      ${showActions ? '<th>Aksi</th>' : ''}
+    </tr>
+  `;
+  root.querySelector('[data-table-body]').innerHTML = rows.length ? rows.map((row, index) => `
+    <tr>
+      ${schema.display.map(key => `<td>${formatCell(entity, key, row[key], row)}</td>`).join('')}
+      ${showActions ? `<td>${renderRowActionsCore(entity, index)}</td>` : ''}
+    </tr>
+  `).join('') : `<tr><td colspan="${schema.display.length + 1}"><div class="empty-state">Belum ada data.</div></td></tr>`;
+  root.querySelector('[data-table-foot]').textContent = `${rows.length} dari ${state.total[entity] || rows.length} data ditampilkan.`;
+}
+
+function renderRowActionsCore(entity, index) {
+  const edit = canWriteEntity(entity) ? `
+    <button class="icon-btn" type="button" data-action="edit-row" data-index="${index}" title="Edit">
+      <i data-lucide="pencil"></i>
+    </button>` : '';
+  const del = canDeleteEntity(entity) ? `
+    <button class="icon-btn danger" type="button" data-action="delete-row" data-index="${index}" title="Hapus">
+      <i data-lucide="trash-2"></i>
+    </button>` : '';
+  const portfolio = entity === 'students' ? `
+    <button class="icon-btn" type="button" data-action="open-portfolio" data-index="${index}" title="Portofolio">
+      <i data-lucide="id-card"></i>
+    </button>` : '';
+  const print = ['rplbk', 'services', 'journals', 'letters'].includes(entity) ? `
+    <button class="icon-btn" type="button" data-action="print-row" data-index="${index}" title="Cetak">
+      <i data-lucide="printer"></i>
+    </button>` : '';
+  return `<div class="table-actions">${portfolio}${print}${edit}${del}</div>`;
+}
+
+async function handleManagerActionCore(entity, event) {
+  const btn = event.target.closest('[data-action]');
+  if (!btn) return;
+  const index = Number(btn.dataset.index);
+  if (Number.isNaN(index)) return;
+  const row = (state.rows[entity] || [])[index];
+  if (!row) return;
+  const action = btn.dataset.action;
+  if (action === 'edit-row') openRecordModalCore(entity, row);
+  if (action === 'delete-row') await deleteRecordCore(entity, row);
+  if (action === 'open-portfolio') {
+    state.selectedStudentId = row.studentId;
+    go('portfolio');
+  }
+  if (action === 'print-row') {
+    if (typeof printRecord === 'function') printRecord(entity, row);
+  }
+}
+
+async function openRecordModalCore(entity, row) {
+  const schema = FIELD_SCHEMAS[entity];
+  if (schema.fields.some(field => field.type === 'student')) await ensureStudentOptions();
+  openModal(row && row[schema.idField] ? 'Edit Data' : 'Tambah Data', schema.title, buildForm(entity, row || {}));
+  const form = document.querySelector(`[data-record-form="${entity}"]`);
+  setupRegionSearch(form);
+  setupStudentClassControls(form);
+  setupSubjectControls(form);
+  setupManagedFileUploads(form);
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (!validateRegionSelections(form)) return;
+    if (!validateManagedUploads(form)) return;
+    const btn = form.querySelector('button[type="submit"]');
+    setBusy(btn, true);
+    try {
+      const payload = collectForm(form);
+      const result = await server('saveRow', state.token, entity, payload);
+      closeModal();
+      showToast(result.message || 'Data tersimpan.');
+      await loadEntityRowsCore(entity);
+    } catch (err) {
+      showToast(err.message || 'Gagal menyimpan data.', true);
+    } finally {
+      setBusy(btn, false);
+    }
+  };
+}
+
+async function deleteRecordCore(entity, row) {
+  const schema = FIELD_SCHEMAS[entity];
+  if (!confirm('Hapus data ini?')) return;
+  try {
+    await server('deleteRow', state.token, entity, row[schema.idField]);
+    showToast('Data dihapus.');
+    await loadEntityRowsCore(entity);
+  } catch (err) {
+    showToast(err.message || 'Gagal menghapus data.', true);
+  }
+}
+
+async function importEntityFileCore(entity, event) {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  try {
+    const rawRows = await readWorkbookFile(file);
+    const rows = normalizeImportRows(entity, rawRows);
+    if (!rows.length) throw new Error('Tidak ada baris yang cocok dengan template.');
+    if (!confirm(`Impor ${rows.length} baris ke ${FIELD_SCHEMAS[entity].title}?`)) return;
+    const result = await server('bulkImportRows', state.token, entity, rows);
+    showToast(`${result.count || rows.length} baris berhasil diimpor.`);
+    await loadEntityRowsCore(entity);
+  } catch (err) {
+    showToast(err.message || 'Impor gagal.', true);
+  }
+}
+
+async function renderDashboardPageCoreFallback() {
+  setContentFromTemplate('tpl-dashboard');
+  const root = document.getElementById('content');
+  if (!root) return;
+  const logo = root.querySelector('[data-logo]');
+  if (logo) logo.src = (state.app && state.app.logoUrl) || '';
+  const roleCopy = {
+    SUPERADMIN: ['Pusat kendali SIBAKTI', 'Pantau data BK, pengguna, layanan, Action Plan BK, dan pengaturan sistem.'],
+    ADMIN_MADRASAH: ['Administrasi BK madrasah', 'Kelola data inti, akun pengguna, arsip, dan laporan madrasah.'],
+    GURU_BK: ['Ruang kerja Guru BK', 'Tangani database siswa, layanan, catatan anekdot, portofolio, dan RPLBK secara terpadu.'],
+    WALI_KELAS: ['Beranda Wali Kelas', 'Pantau siswa binaan, kehadiran, dan portofolio pendampingan kelas.'],
+    KEPALA_MADRASAH: ['Dashboard Pimpinan', 'Lihat ringkasan layanan, kehadiran, Action Plan BK, dan tindak lanjut BK.'],
+    SISWA: ['Portofolio Siswa', 'Lihat ringkasan data diri dan rekam kehadiran yang terhubung dengan akun.'],
+    ORANG_TUA: ['Ruang Orang Tua', 'Pantau portofolio dan kehadiran putra-putri yang terhubung dengan akun.']
+  };
+  const copy = roleCopy[(state.user && state.user.role) || 'GURU_BK'] || roleCopy.GURU_BK;
+  setElementText(root.querySelector('[data-role-label]'), roleLabel(state.user && state.user.role));
+  setElementText(root.querySelector('[data-dashboard-title]'), copy[0]);
+  setElementText(root.querySelector('[data-dashboard-copy]'), copy[1]);
+  renderDashboardMetricsCoreFallback({});
+  try {
+    state.dashboard = await server('getDashboardData', state.token);
+  } catch (err) {
+    state.dashboard = state.dashboard || {};
+    showToast(err.message || 'Dashboard belum bisa diperbarui.', true);
+  }
+  renderDashboardMetricsCoreFallback(state.dashboard || {});
+  renderDashboardRecentCoreFallback(state.dashboard || {});
+  refreshIcons();
+}
+
+function renderDashboardMetricsCoreFallback(data) {
+  const target = document.querySelector('[data-metrics]');
+  if (!target) return;
+  const counts = (data && data.counts) || {};
+  const summary = (data && data.attendanceSummary) || {};
+  const metrics = [
+    ['Siswa', counts.students || 0, 'users-round'],
+    ['Hadir hari ini', counts.attendanceToday || 0, 'calendar-check'],
+    ['Layanan bulan ini', counts.servicesMonth || 0, 'messages-square'],
+    ['Catatan Anekdot', counts.journals || 0, 'notebook-pen'],
+    ['Surat', counts.letters || 0, 'mail']
+  ];
+  if (summary.Alfa > 0) metrics.push(['Alfa bulan ini', summary.Alfa, 'alert-triangle']);
+  target.innerHTML = metrics.map(item => `
+    <article class="metric-card">
+      <i data-lucide="${item[2]}"></i>
+      <span>${escapeHtml(item[0])}</span>
+      <strong>${escapeHtml(item[1])}</strong>
+    </article>
+  `).join('');
+}
+
+function renderDashboardRecentCoreFallback(data) {
+  const host = document.querySelector('[data-recent-services]');
+  if (!host) return;
+  const rows = (data && data.recentServices) || [];
+  host.innerHTML = rows.length ? rows.map(row => `
+    <div class="compact-item">
+      <div>
+        <strong>${escapeHtml(row.topik || row.jenisLayanan || 'Layanan BK')}</strong>
+        <span>${escapeHtml(row.tanggal || '-')} | ${escapeHtml(row.jenisLayanan || '-')} | ${escapeHtml(row.kelas || row.sasaran || '-')}</span>
+      </div>
+    </div>
+  `).join('') : '<div class="empty-state">Belum ada layanan terbaru.</div>';
+}
+
+async function renderPortfolioPageCoreFallback() {
+  setContentFromTemplate('tpl-portfolio');
+  await ensureStudentOptions();
+  const root = document.getElementById('content');
+  const search = root ? root.querySelector('[data-portfolio-search]') : null;
+  const printBtn = root ? root.querySelector('[data-action="portfolio-print"]') : null;
+  if (search) search.addEventListener('input', () => renderPortfolioPickerCoreFallback(search.value));
+  if (printBtn) {
+    printBtn.onclick = () => {
+      if (!state.currentPortfolio) {
+        showToast('Pilih siswa terlebih dahulu.', true);
+        return;
+      }
+      if (typeof printPortfolio === 'function') printPortfolio(state.currentPortfolio);
+      else window.print();
+    };
+  }
+  renderPortfolioPickerCoreFallback('');
+  const initialId = state.selectedStudentId || (state.user && state.user.studentId) || ((state.studentOptions || [])[0] || {}).studentId || '';
+  if (initialId) await selectPortfolioStudentCoreFallback(initialId);
+}
+
+function renderPortfolioPickerCoreFallback(search) {
+  const target = document.querySelector('[data-student-list]');
+  if (!target) return;
+  const q = String(search || '').toLowerCase();
+  const rows = (state.studentOptions || []).filter(student => {
+    return !q || [student.nama, student.nisn, student.nis, student.kelas].some(value => String(value || '').toLowerCase().includes(q));
+  });
+  target.innerHTML = rows.length ? rows.map(student => `
+    <button class="student-item ${student.studentId === state.selectedStudentId ? 'active' : ''}" type="button" data-student-id="${escapeAttr(student.studentId)}">
+      <div>
+        <strong>${escapeHtml(student.nama || '-')}</strong>
+        <span>${escapeHtml(student.kelas || '-')} | ${escapeHtml(student.nisn || student.nis || '-')}</span>
+      </div>
+      <i data-lucide="chevron-right"></i>
+    </button>
+  `).join('') : '<div class="empty-state">Siswa tidak ditemukan.</div>';
+  target.querySelectorAll('[data-student-id]').forEach(btn => {
+    btn.onclick = () => selectPortfolioStudentCoreFallback(btn.dataset.studentId);
+  });
+  refreshIcons();
+}
+
+async function selectPortfolioStudentCoreFallback(studentId) {
+  state.selectedStudentId = studentId;
+  const search = document.querySelector('[data-portfolio-search]');
+  renderPortfolioPickerCoreFallback(search ? search.value : '');
+  const preview = document.querySelector('[data-portfolio-preview]');
+  if (!preview) return;
+  preview.innerHTML = '<div class="empty-state">Memuat portofolio...</div>';
+  try {
+    const profile = await server('getStudentProfile', state.token, studentId);
+    state.currentPortfolio = profile;
+    preview.innerHTML = buildPortfolioHtmlCoreFallback(profile);
+  } catch (err) {
+    preview.innerHTML = `<div class="empty-state">${escapeHtml(err.message || 'Gagal memuat portofolio.')}</div>`;
+  }
+  refreshIcons();
+}
+
+function buildPortfolioHtmlCoreFallback(profile) {
+  const student = (profile && profile.student) || {};
+  const recap = (profile && profile.attendanceRecap) || {};
+  const photo = normalizeDriveImageUrlCoreFallback(student.fotoUrl, student.fotoFileId, 'w400');
+  const initial = (student.nama || 'S').slice(0, 1).toUpperCase();
+  const alamat = student.alamat || [student.desa, student.kecamatan, student.kabupaten, student.provinsi].filter(Boolean).join(', ');
+  return `
+    <div class="portfolio-card">
+      <div class="portfolio-head">
+        <div class="photo-box">${photo ? `<img src="${escapeAttr(photo)}" alt="Foto siswa">` : `<span>${escapeHtml(initial)}</span>`}</div>
+        <div>
+          <p class="eyebrow">Portofolio Siswa</p>
+          <h2>${escapeHtml(student.nama || '-')}</h2>
+          <p>${escapeHtml(student.kelas || '-')} | NISN ${escapeHtml(student.nisn || '-')} | ${escapeHtml(student.status || 'Aktif')}</p>
+        </div>
+      </div>
+      <div class="info-grid">
+        ${infoCellCoreFallback('Tempat/Tgl Lahir', `${student.tempatLahir || '-'}, ${student.tanggalLahir || '-'}`)}
+        ${infoCellCoreFallback('Jenis Kelamin', student.jk)}
+        ${infoCellCoreFallback('Alamat', alamat)}
+        ${infoCellCoreFallback('Ayah', `${student.ayah || '-'} / ${student.pekerjaanAyah || '-'}`)}
+        ${infoCellCoreFallback('Ibu', `${student.ibu || '-'} / ${student.pekerjaanIbu || '-'}`)}
+        ${infoCellCoreFallback('No HP Ortu', student.noHpOrtu)}
+        ${infoCellCoreFallback('Kondisi Rumah', student.kondisiRumah)}
+        ${infoCellCoreFallback('Kebutuhan Khusus', student.kebutuhanKhusus)}
+      </div>
+      <div class="metric-grid compact">
+        ${['Hadir', 'Sakit', 'Izin', 'Alfa', 'Terlambat', 'Dispensasi', 'total'].map(key => `
+          <article class="metric-card">
+            <span>${escapeHtml(key === 'total' ? 'Total Kehadiran' : key)}</span>
+            <strong>${escapeHtml(recap[key] || 0)}</strong>
+          </article>
+        `).join('')}
+      </div>
+      <div class="split-layout">
+        <section>
+          <p class="eyebrow">Prestasi Terbaru</p>
+          <div class="compact-list">${renderCompactRowsCoreFallback((profile && profile.achievements) || [], 'namaPrestasi', 'peringkat')}</div>
+        </section>
+        <section>
+          <p class="eyebrow">Layanan BK Terbaru</p>
+          <div class="compact-list">${renderCompactRowsCoreFallback((profile && profile.services) || [], 'topik', 'jenisLayanan')}</div>
+        </section>
+        <section>
+          <p class="eyebrow">Catatan Anekdot</p>
+          <div class="compact-list">${renderCompactRowsCoreFallback((profile && profile.journals) || [], 'peristiwa', 'privasi')}</div>
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+function renderCompactRowsCoreFallback(rows, titleKey, metaKey) {
+  return (rows || []).slice(0, 4).map(row => `
+    <div class="compact-item">
+      <div>
+        <strong>${escapeHtml(compact(row[titleKey] || '-', 70))}</strong>
+        <span>${escapeHtml(row.tanggal || row.tahun || '-')} | ${escapeHtml(row[metaKey] || '-')}</span>
+      </div>
+    </div>
+  `).join('') || '<div class="empty-state">Belum ada data.</div>';
+}
+
+async function renderRecapPageCoreFallback() {
+  setContentFromTemplate('tpl-recap');
+  await ensureStudentOptions();
+  const classSelect = document.querySelector('[data-recap-class]');
+  fillClassSelect(classSelect, state.studentOptions);
+  const form = document.querySelector('[data-recap-form]');
+  if (form) {
+    const now = new Date();
+    if (form.startDate) form.startDate.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    if (form.endDate) form.endDate.value = now.toISOString().slice(0, 10);
+    form.onsubmit = event => {
+      event.preventDefault();
+      loadRecapCoreFallback();
+    };
+  }
+  const printBtn = document.querySelector('[data-action="print-recap"]');
+  if (printBtn) printBtn.onclick = () => typeof printRecap === 'function' ? printRecap(state.recap) : window.print();
+  await loadRecapCoreFallback();
+}
+
+async function loadRecapCoreFallback() {
+  const form = document.querySelector('[data-recap-form]');
+  const payload = form ? collectForm(form) : {};
+  try {
+    const recap = await server('getAttendanceRecap', state.token, payload);
+    state.recap = recap;
+    renderRecapCoreFallback(recap);
+  } catch (err) {
+    const body = document.querySelector('[data-recap-body]');
+    if (body) body.innerHTML = `<tr><td colspan="9"><div class="empty-state">${escapeHtml(err.message || 'Gagal memuat rekap.')}</div></td></tr>`;
+    showToast(err.message || 'Gagal memuat rekap.', true);
+  }
+}
+
+function renderRecapCoreFallback(recap) {
+  const summary = (recap && recap.summary) || {};
+  const summaryHost = document.querySelector('[data-recap-summary]');
+  if (summaryHost) {
+    summaryHost.innerHTML = ['Hadir', 'Sakit', 'Izin', 'Alfa', 'Terlambat', 'Dispensasi', 'total'].map(key => `
+      <article class="metric-card">
+        <span>${escapeHtml(key === 'total' ? 'Total' : key)}</span>
+        <strong>${escapeHtml(summary[key] || 0)}</strong>
+      </article>
+    `).join('');
+  }
+  const body = document.querySelector('[data-recap-body]');
+  if (!body) return;
+  const rows = (recap && recap.rows) || [];
+  body.innerHTML = rows.length ? rows.map(row => `
+    <tr>
+      <td>${escapeHtml(row.nama || row.studentId || '-')}</td>
+      <td>${escapeHtml(row.kelas || '-')}</td>
+      <td>${escapeHtml(row.Hadir || 0)}</td>
+      <td>${escapeHtml(row.Sakit || 0)}</td>
+      <td>${escapeHtml(row.Izin || 0)}</td>
+      <td>${escapeHtml(row.Alfa || 0)}</td>
+      <td>${escapeHtml(row.Terlambat || 0)}</td>
+      <td>${escapeHtml(row.Dispensasi || 0)}</td>
+      <td>${escapeHtml(row.total || 0)}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="9"><div class="empty-state">Belum ada data kehadiran pada rentang ini.</div></td></tr>';
+}
+
+async function renderCounselorProfilePageCoreFallback() {
+  setContentFromTemplate('tpl-counselor-profile');
+  const form = document.querySelector('[data-counselor-profile-form]');
+  let profile = state.counselorProfile || {};
+  try {
+    const result = await server('getMyCounselorProfile', state.token);
+    profile = result.profile || profile;
+    state.counselorProfile = profile;
+  } catch (err) {
+    showToast(err.message || 'Profil Guru BK tidak bisa dimuat.', true);
+  }
+  fillFormValuesCoreFallback(form, profile);
+  renderCounselorProfileSummaryCoreFallback(profile);
+  renderCounselorAccountInfoCoreFallback();
+  setupRegionSearch(form);
+  bindCounselorProfileCoreFallback(form);
+  await loadCounselorDirectoryCoreFallback();
+  refreshIcons();
+}
+
+function bindCounselorProfileCoreFallback(form) {
+  const photoInput = document.querySelector('[data-profile-photo-input]');
+  const chooseBtn = document.querySelector('[data-action="choose-profile-photo"]');
+  const photoFileName = document.querySelector('[data-photo-file-name]');
+  let pendingPhoto = null;
+  if (chooseBtn && photoInput) {
+    chooseBtn.onclick = () => photoInput.click();
+    photoInput.onchange = async () => {
+      const file = photoInput.files && photoInput.files[0];
+      if (!file) return;
+      if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+        showToast('Foto harus JPG, PNG, atau WebP.', true);
+        photoInput.value = '';
+        return;
+      }
+      if (file.size > 100 * 1024) {
+        showToast('Ukuran foto maksimal 100 KB.', true);
+        photoInput.value = '';
+        return;
+      }
+      pendingPhoto = await readFileAsDataUrlCoreFallback(file);
+      renderLocalCounselorProfilePhotoCoreFallback(pendingPhoto.dataUrl);
+      if (photoFileName) photoFileName.textContent = `${file.name} siap diunggah.`;
+    };
+  }
+  if (form) {
+    form.onsubmit = async event => {
+      event.preventDefault();
+      if (!validateRegionSelections(form)) return;
+      const btn = form.querySelector('button[type="submit"]');
+      setBusy(btn, true);
+      try {
+        const payload = collectForm(form);
+        if (pendingPhoto) {
+          payload.fotoData = pendingPhoto.dataUrl.split(',')[1] || '';
+          payload.fotoMimeType = pendingPhoto.mimeType;
+          payload.fotoName = pendingPhoto.name;
+        }
+        const result = await server('saveMyCounselorProfile', state.token, payload);
+        state.counselorProfile = result.profile || {};
+        state.user = result.user || state.user;
+        pendingPhoto = null;
+        if (photoInput) photoInput.value = '';
+        if (photoFileName) photoFileName.textContent = 'JPG, PNG, atau WebP. Ukuran file maksimal 100 KB.';
+        fillFormValuesCoreFallback(form, state.counselorProfile);
+        renderCounselorProfileSummaryCoreFallback(state.counselorProfile);
+        renderCounselorAccountInfoCoreFallback();
+        renderUser();
+        showToast(result.message || 'Profil Guru BK tersimpan.');
+      } catch (err) {
+        showToast(err.message || 'Profil Guru BK gagal disimpan.', true);
+      } finally {
+        setBusy(btn, false);
+      }
+    };
+  }
+  const passwordForm = document.querySelector('[data-password-form]');
+  const toggleBtn = document.querySelector('[data-action="toggle-profile-password"]');
+  if (toggleBtn && passwordForm) toggleBtn.onclick = () => togglePasswordVisibilityCoreFallback(passwordForm, toggleBtn);
+  if (passwordForm) {
+    passwordForm.onsubmit = async event => {
+      event.preventDefault();
+      const data = collectForm(passwordForm);
+      if (!data.oldPassword || !data.newPassword || data.newPassword !== data.newPassword2) {
+        showToast('Password lama, baru, dan konfirmasi wajib sesuai.', true);
+        return;
+      }
+      const btn = passwordForm.querySelector('button[type="submit"]');
+      setBusy(btn, true);
+      try {
+        await server('changePassword', state.token, data);
+        passwordForm.reset();
+        showToast('Password akun berhasil diubah.');
+      } catch (err) {
+        showToast(err.message || 'Password gagal diubah.', true);
+      } finally {
+        setBusy(btn, false);
+      }
+    };
+  }
+  const printBtn = document.querySelector('[data-action="print-counselor-profile"]');
+  if (printBtn) {
+    printBtn.onclick = () => {
+      if (typeof printCounselorProfile === 'function') printCounselorProfile(state.counselorProfile || {});
+      else window.print();
+    };
+  }
+  const scope = document.querySelector('[data-counselor-scope]');
+  const query = document.querySelector('[data-counselor-query]');
+  const refresh = document.querySelector('[data-action="refresh-counselor-directory"]');
+  if (scope) scope.onchange = loadCounselorDirectoryCoreFallback;
+  if (refresh) refresh.onclick = loadCounselorDirectoryCoreFallback;
+  if (query) query.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      loadCounselorDirectoryCoreFallback();
+    }
+  });
+}
+
+function renderCounselorProfileSummaryCoreFallback(profile) {
+  profile = profile || {};
+  const box = document.querySelector('[data-profile-photo-box]');
+  const img = document.querySelector('[data-profile-summary-photo]');
+  const initial = document.querySelector('[data-profile-summary-initial]');
+  const name = document.querySelector('[data-profile-summary-name]');
+  const meta = document.querySelector('[data-profile-summary-meta]');
+  const nama = profile.namaGelar || (state.user && state.user.nama) || 'Guru BK';
+  if (name) name.textContent = nama;
+  if (meta) meta.textContent = [profile.madrasah || (state.user && state.user.madrasah), profile.kabupaten, profile.provinsi].filter(Boolean).join(' | ') || 'Database nasional Guru BK Madrasah';
+  if (initial) initial.textContent = nama.slice(0, 1).toUpperCase();
+  const photo = profile.photoDataUrl || normalizeDriveImageUrlCoreFallback(profile.fotoUrl, profile.fotoFileId, 'w400');
+  if (img && box) {
+    if (typeof renderResilientProfilePhoto === 'function') renderResilientProfilePhoto(box, img, photo);
+    else if (photo) {
+      img.removeAttribute('src');
+      box.style.backgroundImage = `url("${String(photo).replace(/"/g, '\\"')}")`;
+      box.classList.add('has-photo');
+    } else {
+      img.removeAttribute('src');
+      box.style.backgroundImage = '';
+      box.classList.remove('has-photo');
+    }
+  }
+}
+
+function renderLocalCounselorProfilePhotoCoreFallback(dataUrl) {
+  const box = document.querySelector('[data-profile-photo-box]');
+  const img = document.querySelector('[data-profile-summary-photo]');
+  if (!box || !img || !dataUrl) return;
+  if (typeof setProfilePhotoBoxSource === 'function') setProfilePhotoBoxSource(box, img, dataUrl);
+  else {
+    img.removeAttribute('src');
+    box.style.backgroundImage = `url("${String(dataUrl).replace(/"/g, '\\"')}")`;
+    box.classList.add('has-photo');
+  }
+}
+
+function renderCounselorAccountInfoCoreFallback() {
+  const user = state.user || {};
+  setElementText(document.querySelector('[data-account-username]'), user.email || '-');
+  setElementText(document.querySelector('[data-account-email]'), user.email || '-');
+  setElementText(document.querySelector('[data-account-role]'), roleLabel(user.role || 'GURU_BK'));
+  setElementText(document.querySelector('[data-account-madrasah]'), user.madrasah || '-');
+  setElementText(document.querySelector('[data-account-status]'), String(user.active || 'TRUE').toUpperCase() === 'FALSE' ? 'Belum aktif' : 'Terdaftar dan aktif');
+  setElementText(document.querySelector('[data-account-last-login]'), user.lastLoginAt || '-');
+}
+
+async function loadCounselorDirectoryCoreFallback() {
+  const host = document.querySelector('[data-counselor-directory]');
+  if (!host) return;
+  host.innerHTML = '<div class="empty-state">Memuat profil Guru BK...</div>';
+  try {
+    const result = await server('listCounselorProfiles', state.token, {
+      scope: (document.querySelector('[data-counselor-scope]') || {}).value || 'school',
+      query: (document.querySelector('[data-counselor-query]') || {}).value || ''
+    });
+    const currentUserId = state.user && state.user.userId ? state.user.userId : '';
+    const rows = (result.rows || []).filter(row => String(row.userId || '') !== String(currentUserId));
+    host.innerHTML = rows.length ? rows.map(row => `
+      <article class="counselor-card">
+        <div class="counselor-avatar"><span>${escapeHtml((row.namaGelar || 'G').slice(0, 1).toUpperCase())}</span></div>
+        <div>
+          <strong>${escapeHtml(row.namaGelar || 'Guru BK')}</strong>
+          <span>${escapeHtml(row.madrasah || '-')}</span>
+          <small>${escapeHtml([row.kecamatan, row.kabupaten, row.provinsi].filter(Boolean).join(' | ') || 'Wilayah belum dilengkapi')}</small>
+          <small>${escapeHtml(row.emailAktif || '-')}</small>
+        </div>
+      </article>
+    `).join('') : '<div class="empty-state">Belum ada profil Guru BK lain pada filter ini.</div>';
+  } catch (err) {
+    host.innerHTML = `<div class="empty-state">${escapeHtml(err.message || 'Daftar profil Guru BK tidak bisa dimuat.')}</div>`;
+  }
+}
+
+async function renderLetterheadSettingsPageCoreFallback() {
+  setContentFromTemplate('tpl-letterhead-settings');
+  const form = document.querySelector('[data-letterhead-form]');
+  const preview = document.querySelector('[data-letterhead-preview]');
+  const editBtn = document.querySelector('[data-action="edit-letterhead"]');
+  const cancelBtn = document.querySelector('[data-action="cancel-letterhead-edit"]');
+  let map = {};
+  let locked = false;
+  let editing = false;
+  try {
+    const result = await server('getLetterheadSettings', state.token);
+    if (result.ownerUserId && state.user && String(result.ownerUserId) !== String(state.user.userId)) {
+      throw new Error('KOP tidak sesuai dengan akun aktif. Silakan login ulang.');
+    }
+    map = result.map || {};
+    fillFormValuesCoreFallback(form, map);
+    locked = !!result.locked;
+    editing = !locked;
+    state.app = result.settings || state.app;
+  } catch (err) {
+    showToast(err.message || 'KOP dokumen tidak bisa dimuat.', true);
+  }
+  setupRegionSearch(form);
+  renderLetterheadPreviewCoreFallback(preview, form ? collectForm(form) : {});
+  applyLetterheadLockStateCoreFallback(form, locked && !editing);
+  syncLetterheadEditActionsCoreFallback(editBtn, cancelBtn, locked, editing);
+  if (editBtn) editBtn.onclick = () => {
+    editing = true;
+    applyLetterheadLockStateCoreFallback(form, false);
+    syncLetterheadEditActionsCoreFallback(editBtn, cancelBtn, locked, editing);
+  };
+  if (cancelBtn) cancelBtn.onclick = () => {
+    fillFormValuesCoreFallback(form, map);
+    editing = false;
+    renderLetterheadPreviewCoreFallback(preview, collectForm(form));
+    applyLetterheadLockStateCoreFallback(form, locked);
+    syncLetterheadEditActionsCoreFallback(editBtn, cancelBtn, locked, editing);
+  };
+  if (form) {
+    Array.from(form.elements).forEach(el => {
+      if (el.name) el.addEventListener('input', () => renderLetterheadPreviewCoreFallback(preview, collectForm(form)));
+    });
+    form.onsubmit = async event => {
+      event.preventDefault();
+      if (locked && !editing) {
+        showToast('Klik Edit KOP terlebih dahulu.', true);
+        return;
+      }
+      if (!validateRegionSelections(form)) return;
+      const btn = form.querySelector('button[type="submit"]');
+      setBusy(btn, true);
+      try {
+        const result = await server('saveLetterheadSettings', state.token, collectForm(form));
+        if (result.ownerUserId && state.user && String(result.ownerUserId) !== String(state.user.userId)) {
+          throw new Error('KOP tersimpan pada identitas akun yang tidak sesuai.');
+        }
+        locked = !!result.locked;
+        editing = false;
+        map = result.map || {};
+        state.app = result.settings || state.app;
+        fillFormValuesCoreFallback(form, map);
+        renderLetterheadPreviewCoreFallback(preview, collectForm(form));
+        renderBrand();
+        applyLetterheadLockStateCoreFallback(form, locked);
+        syncLetterheadEditActionsCoreFallback(editBtn, cancelBtn, locked, editing);
+        showToast('KOP dokumen tersimpan khusus untuk akun ini.');
+      } catch (err) {
+        showToast(err.message || 'KOP dokumen gagal disimpan.', true);
+      } finally {
+        setBusy(btn, false);
+        applyLetterheadLockStateCoreFallback(form, locked && !editing);
+        syncLetterheadEditActionsCoreFallback(editBtn, cancelBtn, locked, editing);
+      }
+    };
+  }
+  const refreshBtn = document.querySelector('[data-action="refresh-letterhead-preview"]');
+  if (refreshBtn) refreshBtn.onclick = () => renderLetterheadPreviewCoreFallback(preview, form ? collectForm(form) : {});
+  refreshIcons();
+}
+
+function syncLetterheadEditActionsCoreFallback(editBtn, cancelBtn, locked, editing) {
+  if (editBtn) editBtn.classList.toggle('is-hidden', !locked || editing);
+  if (cancelBtn) cancelBtn.classList.toggle('is-hidden', !locked || !editing);
+  refreshIcons();
+}
+
+function applyLetterheadLockStateCoreFallback(form, locked) {
+  if (!form) return;
+  const note = form.querySelector('[data-letterhead-lock-note]');
+  if (note) note.classList.toggle('is-hidden', !locked);
+  Array.from(form.elements).forEach(el => {
+    if (el.type === 'submit') {
+      el.disabled = !!locked;
+      return;
+    }
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+      el.readOnly = !!locked;
+      el.classList.toggle('is-locked', !!locked);
+    } else if (el.tagName === 'SELECT') {
+      el.disabled = !!locked;
+      el.classList.toggle('is-locked', !!locked);
+    }
+  });
+}
+
+function renderLetterheadPreviewCoreFallback(host, values) {
+  if (!host) return;
+  values = values || {};
+  const app = state.app || {};
+  const logo = values.LETTERHEAD_LOGO_URL || app.logoUrl || '';
+  const ministry = values.LETTERHEAD_MINISTRY || 'KEMENTERIAN AGAMA REPUBLIK INDONESIA';
+  const office = values.LETTERHEAD_OFFICE || 'KANTOR KEMENTERIAN AGAMA';
+  const madrasah = values.LETTERHEAD_MADRASAH || values.MADRASAH_NAME || app.madrasahName || 'Madrasah';
+  const signer = values.LETTERHEAD_SIGNATURE_NAME || (state.counselorProfile && state.counselorProfile.namaGelar) || (state.user && state.user.nama) || 'Nama Guru BK';
+  host.innerHTML = `
+    <div class="preview-letterhead-head">
+      <img src="${escapeAttr(logo)}" alt="Logo">
+      <div>
+        <strong>${escapeHtml(ministry)}</strong>
+        <strong>${escapeHtml(office)}</strong>
+        <b>${escapeHtml(madrasah)}</b>
+        ${values.LETTERHEAD_ADDRESS || values.MADRASAH_ADDRESS ? `<span>${escapeHtml(values.LETTERHEAD_ADDRESS || values.MADRASAH_ADDRESS)}</span>` : ''}
+        ${values.LETTERHEAD_PHONE ? `<span>${escapeHtml('Telepon ' + values.LETTERHEAD_PHONE)}</span>` : ''}
+        ${values.LETTERHEAD_EMAIL ? `<span>${escapeHtml('email: ' + values.LETTERHEAD_EMAIL)}</span>` : ''}
+      </div>
+    </div>
+    <div class="preview-letter-content">
+      <p>Nomor&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: B-001/Contoh/06/2026</p>
+      <p>Lampiran&nbsp;&nbsp;: -</p>
+      <p>Hal&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: Contoh Dokumen</p>
+      <p class="preview-gap">Isi surat/dokumen akan menggunakan KOP ini saat dicetak.</p>
+    </div>
+    <div class="preview-signature">
+      <p>${escapeHtml(values.LETTERHEAD_SIGNATURE_PLACE || 'Bandung')}, ${escapeHtml(new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }))}</p>
+      <p>${escapeHtml(values.LETTERHEAD_SIGNATURE_ROLE || 'Guru BK')}</p>
+      <div></div>
+      <strong>${escapeHtml(signer)}</strong>
+    </div>
+  `;
+}
+
+async function renderActionPlanBKPageCoreFallback() {
+  setContentFromTemplate('tpl-action-plan-bk');
+  const root = document.getElementById('content');
+  fillActionPlanSelectsCoreFallback(root, getActionPlanOptionsCoreFallback());
+  const filterForm = root ? root.querySelector('[data-action-plan-filter]') : null;
+  if (filterForm) {
+    filterForm.onsubmit = event => {
+      event.preventDefault();
+      loadActionPlanRowsCoreFallback();
+    };
+  }
+  const resetBtn = root ? root.querySelector('[data-action="reset-action-plan-filter"]') : null;
+  if (resetBtn && filterForm) {
+    resetBtn.onclick = () => {
+      filterForm.reset();
+      loadActionPlanRowsCoreFallback();
+    };
+  }
+  const refreshBtn = root ? root.querySelector('[data-action="refresh-action-plan"]') : null;
+  if (refreshBtn) refreshBtn.onclick = loadActionPlanRowsCoreFallback;
+  const printBtn = root ? root.querySelector('[data-action="print-action-plan"]') : null;
+  if (printBtn) printBtn.onclick = event => printActionPlanCoreFallback(event.currentTarget);
+  const addBtn = root ? root.querySelector('[data-action="new-action-plan"]') : null;
+  if (addBtn) addBtn.onclick = () => showToast('Form tambah/edit Action Plan membutuhkan JsPages.html terbaru. Data tetap bisa ditampilkan dari renderer cadangan.', true);
+  await loadActionPlanRowsCoreFallback();
+}
+
+function getActionPlanOptionsCoreFallback(options) {
+  options = options || {};
+  return {
+    semester: options.semester || ['Ganjil', 'Genap'],
+    bidangLayanan: options.bidangLayanan || ['Pribadi', 'Sosial', 'Belajar', 'Karier'],
+    aspekSKKPD: options.aspekSKKPD || ['Landasan Hidup Religius', 'Landasan Perilaku Etis', 'Kematangan Emosi', 'Kematangan Intelektual', 'Kesadaran Tanggung Jawab Sosial', 'Kesadaran Gender', 'Pengembangan Pribadi', 'Perilaku Kewirausahaan / Kemandirian Perilaku Ekonomis', 'Wawasan dan Kesiapan Karier', 'Kematangan Hubungan dengan Teman Sebaya', 'Kesiapan Diri untuk Menikah dan Berkeluarga'],
+    tahapPerkembangan: options.tahapPerkembangan || ['Pengenalan', 'Akomodasi', 'Tindakan'],
+    prioritasLayanan: options.prioritasLayanan || ['Sangat Tinggi', 'Tinggi', 'Sedang', 'Rendah'],
+    status: options.status || ['Draft', 'Aktif', 'Dilaksanakan', 'Dievaluasi', 'Selesai', 'Revisi']
+  };
+}
+
+function fillActionPlanSelectsCoreFallback(root, options) {
+  if (!root) return;
+  options = getActionPlanOptionsCoreFallback(options);
+  fillSelectCoreFallback(root.querySelector('[data-action-plan-filter-select="semester"]'), options.semester, 'Semua Semester');
+  fillSelectCoreFallback(root.querySelector('[data-action-plan-filter-select="bidangLayanan"]'), options.bidangLayanan, 'Semua Bidang');
+  fillSelectCoreFallback(root.querySelector('[data-action-plan-filter-select="aspekSKKPD"]'), options.aspekSKKPD, 'Semua Aspek');
+  fillSelectCoreFallback(root.querySelector('[data-action-plan-filter-select="tahapPerkembangan"]'), options.tahapPerkembangan, 'Semua Tahap');
+  fillSelectCoreFallback(root.querySelector('[data-action-plan-filter-select="prioritasLayanan"]'), options.prioritasLayanan, 'Semua Prioritas');
+  fillSelectCoreFallback(root.querySelector('[data-action-plan-filter-select="status"]'), options.status, 'Semua Status');
+}
+
+async function loadActionPlanRowsCoreFallback() {
+  const root = document.getElementById('content');
+  const body = root ? root.querySelector('[data-action-plan-body]') : null;
+  if (body) body.innerHTML = '<tr><td colspan="14"><div class="empty-state">Memuat data Action Plan BK...</div></td></tr>';
+  try {
+    const form = root ? root.querySelector('[data-action-plan-filter]') : null;
+    const result = await server('listActionPlanBK', state.token, form ? collectForm(form) : {});
+    state.actionPlanBKRows = result.rows || [];
+    fillActionPlanSelectsCoreFallback(root, result.options || {});
+    renderActionPlanMetricsCoreFallback(state.actionPlanBKRows);
+    renderActionPlanTableCoreFallback(state.actionPlanBKRows);
+  } catch (err) {
+    if (body) body.innerHTML = `<tr><td colspan="14"><div class="empty-state">${escapeHtml(err.message || 'Action Plan BK gagal dimuat.')}</div></td></tr>`;
+    showToast(err.message || 'Action Plan BK gagal dimuat.', true);
+  }
+  refreshIcons();
+}
+
+function renderActionPlanMetricsCoreFallback(rows) {
+  const host = document.querySelector('[data-action-plan-metrics]');
+  if (!host) return;
+  rows = rows || [];
+  const cards = [
+    ['clipboard-list', 'Total Action Plan', rows.length],
+    ['alert-triangle', 'Prioritas Sangat Tinggi', rows.filter(row => row.PrioritasLayanan === 'Sangat Tinggi').length],
+    ['calendar-check', 'Layanan Aktif', rows.filter(row => row.Status === 'Aktif').length],
+    ['badge-check', 'Selesai', rows.filter(row => row.Status === 'Selesai').length],
+    ['file-pen-line', 'Perlu Revisi', rows.filter(row => row.Status === 'Revisi').length]
+  ];
+  host.innerHTML = cards.map(card => `
+    <article class="metric-card">
+      <i data-lucide="${card[0]}"></i>
+      <span>${escapeHtml(card[1])}</span>
+      <strong>${escapeHtml(card[2])}</strong>
+    </article>
+  `).join('');
+}
+
+function renderActionPlanTableCoreFallback(rows) {
+  const body = document.querySelector('[data-action-plan-body]');
+  const foot = document.querySelector('[data-action-plan-foot]');
+  if (!body) return;
+  rows = rows || [];
+  body.innerHTML = rows.length ? rows.map(row => `
+    <tr>
+      <td>${escapeHtml(row.TahunPelajaran || '-')}</td>
+      <td>${escapeHtml(row.Semester || '-')}</td>
+      <td>${escapeHtml(row.BidangLayanan || '-')}</td>
+      <td>${escapeHtml(row.AspekSKKPD || '-')}</td>
+      <td>${escapeHtml(row.TahapPerkembangan || '-')}</td>
+      <td>${escapeHtml(compact(row.TujuanLayanan || '-', 92))}</td>
+      <td>${escapeHtml(row.StrategiLayanan || '-')}</td>
+      <td>${escapeHtml(row.SasaranKelas || '-')}</td>
+      <td><strong>${escapeHtml(compact(row.MateriTopik || '-', 70))}</strong></td>
+      <td>${escapeHtml(row.BulanPelaksanaan || '-')}</td>
+      <td>${escapeHtml(row.JumlahJP || '-')}</td>
+      <td>${escapeHtml(row.PrioritasLayanan || '-')}</td>
+      <td>${escapeHtml(row.Status || '-')}</td>
+      <td><span class="muted">Mode lihat</span></td>
+    </tr>
+  `).join('') : '<tr><td colspan="14"><div class="empty-state">Belum ada data Action Plan BK.</div></td></tr>';
+  if (foot) foot.textContent = `${rows.length} data ditampilkan.`;
+}
+
+async function printActionPlanCoreFallback(button) {
+  const root = document.getElementById('content');
+  const form = root ? root.querySelector('[data-action-plan-filter]') : null;
+  setBusy(button, true);
+  try {
+    const result = await server('getActionPlanBKPrintData', state.token, form ? collectForm(form) : {});
+    const body = typeof buildActionPlanBKPrintHtml === 'function'
+      ? buildActionPlanBKPrintHtml(result)
+      : buildActionPlanCoreFallbackHtml(result);
+    if (typeof openPrintWindow === 'function') openPrintWindow('Action Plan Bimbingan dan Konseling', body, 'landscape');
+    else window.print();
+  } catch (err) {
+    showToast(err.message || 'Action Plan BK gagal dicetak.', true);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function buildActionPlanCoreFallbackHtml(result) {
+  result = result || {};
+  const rows = result.rows || state.actionPlanBKRows || [];
+  const meta = [result.madrasah || '', result.printedAt ? `Dicetak: ${result.printedAt}` : '']
+    .filter(Boolean)
+    .join(' | ');
+  return `
+    <section class="official-doc">
+      <p class="official-subtitle">ACTION PLAN BIMBINGAN DAN KONSELING | SIBAKTI MADRASAH</p>
+      ${meta ? `<p class="official-note" style="text-align:center;margin-bottom:8px">${escapeHtml(meta)}</p>` : ''}
+      <table class="official-table">
+        <thead>
+          <tr><th>No</th><th>Bidang</th><th>Aspek SKKPD</th><th>Tahap</th><th>Tujuan</th><th>Strategi</th><th>Sasaran</th><th>Materi</th><th>Bulan</th><th>JP</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          ${rows.length ? rows.map((row, index) => `
+            <tr>
+              <td style="text-align:center">${index + 1}</td>
+              <td>${escapeHtml(row.BidangLayanan || '-')}</td>
+              <td>${escapeHtml(row.AspekSKKPD || '-')}</td>
+              <td>${escapeHtml(row.TahapPerkembangan || '-')}</td>
+              <td>${escapeHtml(row.TujuanLayanan || '-')}</td>
+              <td>${escapeHtml(row.StrategiLayanan || '-')}</td>
+              <td>${escapeHtml(row.SasaranKelas || '-')}</td>
+              <td>${escapeHtml(row.MateriTopik || '-')}</td>
+              <td>${escapeHtml(row.BulanPelaksanaan || '-')}</td>
+              <td style="text-align:center">${escapeHtml(row.JumlahJP || '-')}</td>
+              <td>${escapeHtml(row.Status || '-')}</td>
+            </tr>
+          `).join('') : '<tr><td colspan="11">Belum ada data Action Plan BK untuk dicetak.</td></tr>'}
+        </tbody>
+      </table>
+    </section>
+  `;
+}
+
+async function renderAiRplbkPageCoreFallback() {
+  setContentFromTemplate('tpl-ai-rplbk');
+  const root = document.getElementById('content');
+  fillSelectCoreFallback(root ? root.querySelector('[data-ai-bidang-filter]') : null, ['Pribadi', 'Sosial', 'Belajar', 'Karier'], 'Semua');
+  const filterForm = root ? root.querySelector('[data-ai-action-plan-filter]') : null;
+  if (filterForm) {
+    filterForm.onsubmit = event => {
+      event.preventDefault();
+      loadAiActionPlansCoreFallback();
+    };
+  }
+  const select = root ? root.querySelector('[data-ai-action-plan-select]') : null;
+  if (select) select.onchange = () => renderAiPlanPreviewCoreFallback(select.value);
+  const refreshBtn = root ? root.querySelector('[data-action="refresh-ai-action-plans"]') : null;
+  if (refreshBtn) refreshBtn.onclick = loadAiActionPlansCoreFallback;
+  const generateBtn = root ? root.querySelector('[data-action="generate-ai-rplbk"]') : null;
+  if (generateBtn) generateBtn.onclick = event => generateAiRplbkCoreFallback(event.currentTarget);
+  const saveBtn = root ? root.querySelector('[data-action="save-ai-rplbk"]') : null;
+  if (saveBtn) saveBtn.onclick = event => saveAiRplbkCoreFallback(event.currentTarget);
+  const copyBtn = root ? root.querySelector('[data-action="copy-ai-rplbk"]') : null;
+  if (copyBtn) copyBtn.onclick = copyAiEditorCoreFallback;
+  const printBtn = root ? root.querySelector('[data-action="print-ai-rplbk"]') : null;
+  const printPdfBtn = root ? root.querySelector('[data-action="print-ai-rplbk-pdf"]') : null;
+  if (printBtn) printBtn.onclick = printAiEditorCoreFallback;
+  if (printPdfBtn) printPdfBtn.onclick = printAiEditorCoreFallback;
+  await loadAiActionPlansCoreFallback();
+}
+
+async function loadAiActionPlansCoreFallback() {
+  const root = document.getElementById('content');
+  const select = root ? root.querySelector('[data-ai-action-plan-select]') : null;
+  if (select) select.innerHTML = '<option value="">Memuat Action Plan...</option>';
+  try {
+    const form = root ? root.querySelector('[data-ai-action-plan-filter]') : null;
+    const result = await server('listAiRplbkActionPlans', state.token, form ? collectForm(form) : {});
+    state.aiRplbkActionPlans = result.rows || [];
+    if (select) {
+      select.innerHTML = '<option value="">Pilih Action Plan BK</option>' + state.aiRplbkActionPlans.map(row => `
+        <option value="${escapeAttr(row.ActionPlanID)}">${escapeHtml([row.TahunPelajaran || '-', row.Semester || '-', row.SasaranKelas || '-', compact(row.MateriTopik || '-', 70)].join(' | '))}</option>
+      `).join('');
+    }
+  } catch (err) {
+    if (select) select.innerHTML = '<option value="">Action Plan gagal dimuat</option>';
+    showToast(err.message || 'Action Plan BK gagal dimuat.', true);
+  }
+}
+
+function renderAiPlanPreviewCoreFallback(actionPlanId) {
+  const host = document.querySelector('[data-ai-plan-preview]');
+  if (!host) return;
+  const plan = (state.aiRplbkActionPlans || []).find(row => row.ActionPlanID === actionPlanId);
+  state.aiRplbkActionPlan = plan || null;
+  if (!plan) {
+    host.innerHTML = '<div class="empty-state">Pilih salah satu Action Plan BK sebagai dasar RPLBK.</div>';
+    return;
+  }
+  host.innerHTML = `
+    <div class="ai-plan-card">
+      <span>${escapeHtml(plan.TahunPelajaran || '-')} | ${escapeHtml(plan.Semester || '-')}</span>
+      <strong>${escapeHtml(plan.MateriTopik || '-')}</strong>
+      <small>${escapeHtml(plan.SasaranKelas || '-')} | ${escapeHtml(plan.BidangLayanan || '-')}</small>
+    </div>
+  `;
+}
+
+async function generateAiRplbkCoreFallback(button) {
+  const root = document.getElementById('content');
+  const select = root ? root.querySelector('[data-ai-action-plan-select]') : null;
+  const id = select ? select.value : '';
+  if (!id) {
+    showToast('Pilih Action Plan BK terlebih dahulu.', true);
+    return;
+  }
+  setBusy(button, true);
+  try {
+    const result = await server('generateAiRPLBK', state.token, {
+      ActionPlanID: id,
+      Catatan: (root.querySelector('[data-ai-rplbk-note]') || {}).value || ''
+    });
+    state.aiDraft = result;
+    state.aiRplbkActionPlan = result.actionPlan || state.aiRplbkActionPlan;
+    const editor = root.querySelector('[data-ai-rplbk-editor]');
+    if (editor) editor.value = result.draftText || '';
+    setElementText(root.querySelector('[data-ai-rplbk-source]'), result.source || 'Draft');
+    showToast('Draft RPLBK dibuat.');
+  } catch (err) {
+    showToast(err.message || 'Gagal membuat RPLBK.', true);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function saveAiRplbkCoreFallback(button) {
+  const root = document.getElementById('content');
+  const select = root ? root.querySelector('[data-ai-action-plan-select]') : null;
+  const editor = root ? root.querySelector('[data-ai-rplbk-editor]') : null;
+  const actionPlanId = select ? select.value : '';
+  const isi = editor ? editor.value.trim() : '';
+  if (!actionPlanId || !isi) {
+    showToast('Pilih Action Plan dan isi RPLBK terlebih dahulu.', true);
+    return;
+  }
+  setBusy(button, true);
+  try {
+    const result = await server('saveAiRPLBK', state.token, {
+      RPLBKID: (root.querySelector('[data-ai-rplbk-id]') || {}).value || '',
+      ActionPlanID: actionPlanId,
+      IsiRPLBK: isi,
+      Status: (root.querySelector('[data-ai-rplbk-status]') || {}).value || 'Draft',
+      Catatan: (root.querySelector('[data-ai-rplbk-note]') || {}).value || ''
+    });
+    const idInput = root.querySelector('[data-ai-rplbk-id]');
+    if (idInput && result.record) idInput.value = result.record.RPLBKID || '';
+    showToast(result.message || 'RPLBK tersimpan.');
+  } catch (err) {
+    showToast(err.message || 'Gagal menyimpan RPLBK.', true);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+async function copyAiEditorCoreFallback() {
+  const editor = document.querySelector('[data-ai-rplbk-editor]');
+  if (!editor || !editor.value.trim()) {
+    showToast('Belum ada isi RPLBK untuk disalin.', true);
+    return;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(editor.value);
+  else {
+    editor.select();
+    document.execCommand('copy');
+  }
+  showToast('Isi RPLBK disalin.');
+}
+
+function printAiEditorCoreFallback() {
+  const editor = document.querySelector('[data-ai-rplbk-editor]');
+  const text = editor ? editor.value.trim() : '';
+  if (!text) {
+    showToast('Belum ada isi RPLBK untuk dicetak.', true);
+    return;
+  }
+  if (typeof openPrintWindow === 'function') openPrintWindow('RPLBK', `<div class="pre">${escapeHtml(text)}</div>`, 'portrait');
+  else window.print();
+}
+
+function fillFormValuesCoreFallback(form, values) {
+  if (!form) return;
+  values = values || {};
+  Array.from(form.elements).forEach(el => {
+    if (!el.name || values[el.name] === undefined) return;
+    el.value = values[el.name] || '';
+    if (el.dataset && el.dataset.regionInput !== undefined) el.dataset.regionSelectedName = el.value;
+  });
+}
+
+function fillSelectCoreFallback(select, options, placeholder) {
+  if (!select) return;
+  const current = select.value || '';
+  select.innerHTML = `<option value="">${escapeHtml(placeholder || 'Pilih')}</option>` + (options || []).map(option => `
+    <option value="${escapeAttr(option)}" ${String(option) === String(current) ? 'selected' : ''}>${escapeHtml(option)}</option>
+  `).join('');
+}
+
+function setElementText(el, value) {
+  if (el) el.textContent = value || '';
+}
+
+function infoCellCoreFallback(label, value) {
+  return `<div class="info-cell"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value || '-')}</strong></div>`;
+}
+
+function normalizeDriveImageUrlCoreFallback(url, fileId, size) {
+  const id = fileId || extractDriveFileIdCoreFallback(url);
+  if (id) return `https://lh3.googleusercontent.com/d/${encodeURIComponent(id)}=${encodeURIComponent(size || 'w400')}`;
+  return url || '';
+}
+
+function extractDriveFileIdCoreFallback(value) {
+  const text = String(value || '');
+  const patterns = [/[?&]id=([^&#]+)/i, /\/d\/([^/?#]+)/i, /\/file\/d\/([^/?#]+)/i, /\/thumbnail\/([^/?#]+)/i];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) return cleanDriveFileIdCoreFallback(match[1]);
+  }
+  return '';
+}
+
+function cleanDriveFileIdCoreFallback(value) {
+  return decodeURIComponent(String(value || '')).split(/[=&#?]/)[0];
+}
+
+function readFileAsDataUrlCoreFallback(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('File tidak dapat dibaca.'));
+    reader.onload = () => resolve({ dataUrl: reader.result, name: file.name || 'file', mimeType: file.type });
+    reader.readAsDataURL(file);
+  });
+}
+
+function togglePasswordVisibilityCoreFallback(form, button) {
+  const inputs = Array.from(form.querySelectorAll('input[type="password"], input[data-password-visible="true"]'));
+  const shouldShow = form.querySelectorAll('input[type="password"]').length > 0;
+  inputs.forEach(input => {
+    input.type = shouldShow ? 'text' : 'password';
+    input.dataset.passwordVisible = shouldShow ? 'true' : '';
+  });
+  const label = button.querySelector('span');
+  if (label) label.textContent = shouldShow ? 'Sembunyikan Password' : 'Tampilkan Password';
+}
+
+function setContentFromTemplate(templateId) {
+  const template = document.getElementById(templateId);
+  const content = requireElement('content');
+  content.innerHTML = template ? template.innerHTML : '<div class="empty-state">Halaman belum tersedia.</div>';
+  refreshIcons();
+}
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value || '';
+}
+
+function handleGlobalClick(event) {
+  const registerBtn = event.target.closest('#showRegisterBtn');
+  if (registerBtn) {
+    event.preventDefault();
+    showRegister();
+    return;
+  }
+  const backLoginBtn = event.target.closest('#backToLoginBtn');
+  if (backLoginBtn) {
+    event.preventDefault();
+    showLogin();
+    return;
+  }
+  const forgotBtn = event.target.closest('#forgotPasswordBtn');
+  if (forgotBtn) {
+    event.preventDefault();
+    showForgotPassword();
+    return;
+  }
+  if (!event.target.closest('[data-region-field]')) {
+    hideAllRegionResults();
+  }
+  if (!event.target.closest('[data-school-field]')) {
+    hideAllSchoolResults();
+  }
+  const goBtn = event.target.closest('[data-go]');
+  if (goBtn) {
+    event.preventDefault();
+    go(goBtn.dataset.go);
+    return;
+  }
+  const closeBtn = event.target.closest('[data-action="close-modal"]');
+  if (closeBtn) {
+    closeModal();
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.go = go;
+  window.handleNavButtonClick = handleNavButtonClick;
+  window.handleLogin = handleLogin;
+  window.handleRegister = handleRegister;
+  window.handleInitialSetup = handleInitialSetup;
+  window.showLogin = showLogin;
+  window.showRegister = showRegister;
+  window.showForgotPassword = showForgotPassword;
+}
+
+function openModal(title, eyebrow, bodyHtml) {
+  const modalTitle = requireElement('modalTitle');
+  const modalEyebrow = requireElement('modalEyebrow');
+  const modalBody = requireElement('modalBody');
+  const modalHost = requireElement('modalHost');
+  modalTitle.textContent = title;
+  modalEyebrow.textContent = eyebrow || 'Form';
+  modalBody.innerHTML = bodyHtml;
+  modalHost.classList.remove('is-hidden');
+  refreshIcons();
+}
+
+function closeModal() {
+  const modalHost = document.getElementById('modalHost');
+  const modalBody = document.getElementById('modalBody');
+  if (modalHost) modalHost.classList.add('is-hidden');
+  if (modalBody) modalBody.innerHTML = '';
+}
+
+function showToast(message, isError) {
+  const host = document.getElementById('toastHost');
+  if (!host) {
+    console[isError ? 'error' : 'log'](message);
+    return;
+  }
+  const toast = document.createElement('div');
+  toast.className = `toast ${isError ? 'error' : ''}`;
+  toast.textContent = message;
+  host.appendChild(toast);
+  setTimeout(() => toast.remove(), 4200);
+}
+
+function showFatal(message) {
+  document.body.innerHTML = `
+    <main style="min-height:100vh;display:grid;place-items:center;padding:24px;background:#073321;color:white;font-family:Arial,sans-serif">
+      <section style="max-width:720px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.18);border-radius:8px;padding:24px">
+        <h1 style="margin-top:0">SIBAKTI Madrasah belum dapat dimuat</h1>
+        <p>${escapeHtml(message)}</p>
+        <p>Solusi cepat: salin ulang semua file HTML/GS dari paket terbaru, jalankan fungsi <strong>setup()</strong>, lalu buat deployment Web App versi baru.</p>
+      </section>
+    </main>
+  `;
+}
+
+function requireElement(id) {
+  const el = document.getElementById(id);
+  if (!el) {
+    throw new Error(`Elemen "${id}" tidak ditemukan. Biasanya ini terjadi karena file HTML belum tersalin lengkap atau deployment Apps Script masih memakai versi lama.`);
+  }
+  return el;
+}
+
+function setBusy(button, busy) {
+  if (!button) return;
+  button.disabled = busy;
+  if (busy) {
+    button.dataset.oldText = button.innerHTML;
+    button.innerHTML = '<i data-lucide="loader-circle"></i><span>Memproses</span>';
+  } else if (button.dataset.oldText) {
+    button.innerHTML = button.dataset.oldText;
+    delete button.dataset.oldText;
+  }
+  refreshIcons();
+}
+
+function refreshIcons() {
+  if (window.lucide) lucide.createIcons();
+}
+
+function roleLabel(role) {
+  return ROLE_LABELS[role] || role || '-';
+}
+
+function canWriteEntity(entity) {
+  return !!state.user && (ENTITY_WRITE_ROLES[entity] || []).includes(state.user.role);
+}
+
+function canDeleteEntity(entity) {
+  return !!state.user && (ENTITY_DELETE_ROLES[entity] || []).includes(state.user.role);
+}
+
+function getOptions(field) {
+  if (field.options) return field.options;
+  if (field.optionsKey === 'roles') return state.user && state.user.role === 'SUPERADMIN'
+    ? Object.keys(ROLE_LABELS)
+    : Object.keys(ROLE_LABELS).filter(role => role !== 'SUPERADMIN');
+  if (field.optionsKey && state.lookups[field.optionsKey]) return state.lookups[field.optionsKey];
+  return [];
+}
+
+function optionValue(option) {
+  return option && typeof option === 'object' ? option.value : option;
+}
+
+function optionLabel(option) {
+  return option && typeof option === 'object' ? option.label : roleLabel(option);
+}
+
+async function ensureStudentOptions() {
+  if (state.studentOptions) return state.studentOptions;
+  try {
+    const result = await server('listRows', state.token, 'students', { limit: 1000, sortBy: 'nama', sortDir: 'asc' });
+    state.studentOptions = result.rows || [];
+  } catch (err) {
+    state.studentOptions = [];
+  }
+  return state.studentOptions;
+}
+
+function buildForm(entity, record) {
+  const schema = FIELD_SCHEMAS[entity];
+  const today = new Date().toISOString().slice(0, 10);
+  return `
+    <form class="form-grid" data-record-form="${entity}">
+      ${schema.fields.map(field => buildInput(field, record || {}, today)).join('')}
+      <button class="btn btn-primary wide" type="submit">
+        <i data-lucide="save"></i>
+        <span>Simpan</span>
+      </button>
+    </form>
+  `;
+}
+
+function buildInput(field, record, today) {
+  if (field.type === 'section') {
+    return `<div class="form-section-title wide">${escapeHtml(field.label)}</div>`;
+  }
+  if (field.type === 'importOnly') {
+    return '';
+  }
+  let value = record[field.key] || (field.key === 'active' ? 'TRUE' : (field.type === 'date' ? today : ''));
+  if (field.key === 'jenjang' && !value && record.kelas) value = inferJenjangFromClass(record.kelas);
+  const required = field.required ? 'required' : '';
+  const wide = field.wide || field.type === 'textarea' || field.type === 'hidden' ? 'wide' : '';
+  if (field.type === 'hidden') {
+    return `<input type="hidden" name="${field.key}" value="${escapeAttr(value)}">`;
+  }
+  if (field.type === 'photo') {
+    return buildUploadInput(Object.assign({
+      accept: 'image/png,image/jpeg,image/webp',
+      acceptLabel: 'JPG, PNG, atau WebP',
+      maxKb: 100,
+      dataKey: 'fotoData',
+      mimeKey: 'fotoMimeType',
+      nameKey: 'fotoName',
+      buttonLabel: 'Unggah Foto'
+    }, field), record);
+  }
+  if (field.type === 'file') {
+    return buildUploadInput(field, record);
+  }
+  if (field.type === 'classSelect') {
+    const jenjang = record[field.jenjangKey || 'jenjang'] || '';
+    const options = getStudentClassOptions(jenjang);
+    return `
+      <label class="${wide}">
+        <span>${escapeHtml(field.label)}</span>
+        <select name="${field.key}" data-class-select data-jenjang-source="${escapeAttr(field.jenjangKey || 'jenjang')}" ${required}>
+          <option value="">Pilih</option>
+          ${options.map(kelas => `<option value="${escapeAttr(kelas)}" ${String(kelas) === String(value) ? 'selected' : ''}>${escapeHtml(kelas)}</option>`).join('')}
+        </select>
+      </label>
+    `;
+  }
+  if (field.type === 'subjectSelect') {
+    const jenjang = record[field.jenjangKey || 'jenjang'] || '';
+    const options = getSubjectOptions(jenjang);
+    return `
+      <label class="${wide}">
+        <span>${escapeHtml(field.label)}</span>
+        <select name="${field.key}" data-subject-select data-jenjang-source="${escapeAttr(field.jenjangKey || 'jenjang')}" ${required}>
+          <option value="">Pilih</option>
+          ${options.map(subject => `<option value="${escapeAttr(subject)}" ${String(subject) === String(value) ? 'selected' : ''}>${escapeHtml(subject)}</option>`).join('')}
+        </select>
+      </label>
+    `;
+  }
+  if (field.type === 'region') {
+    return buildRegionInput(field, record, required, wide);
+  }
+  if (field.type === 'textarea') {
+    return `
+      <label class="${wide}">
+        <span>${escapeHtml(field.label)}</span>
+        <textarea name="${field.key}" ${required} placeholder="${escapeAttr(field.placeholder || '')}">${escapeHtml(value)}</textarea>
+      </label>
+    `;
+  }
+  if (field.type === 'select') {
+    const options = getOptions(field);
+    return `
+      <label class="${wide}">
+        <span>${escapeHtml(field.label)}</span>
+        <select name="${field.key}" ${required}>
+          <option value="">Pilih</option>
+          ${options.map(opt => `<option value="${escapeAttr(optionValue(opt))}" ${String(optionValue(opt)) === String(value) ? 'selected' : ''}>${escapeHtml(optionLabel(opt))}</option>`).join('')}
+        </select>
+      </label>
+    `;
+  }
+  if (field.type === 'student') {
+    const options = state.studentOptions || [];
+    return `
+      <label class="${wide}">
+        <span>${escapeHtml(field.label)}</span>
+        <select name="${field.key}" ${required}>
+          <option value="">Tidak terkait</option>
+          ${options.map(student => `<option value="${escapeAttr(student.studentId)}" ${student.studentId === value ? 'selected' : ''}>${escapeHtml(student.nama || student.nisn || student.studentId)} - ${escapeHtml(student.kelas || '')}</option>`).join('')}
+        </select>
+      </label>
+    `;
+  }
+  const type = field.type || 'text';
+  return `
+    <label class="${wide}">
+      <span>${escapeHtml(field.label)}</span>
+      <input type="${escapeAttr(type)}" name="${field.key}" value="${escapeAttr(value)}" ${required} placeholder="${escapeAttr(field.placeholder || '')}">
+    </label>
+  `;
+}
+
+function buildUploadInput(field, record) {
+  const value = record[field.key] || '';
+  const fileIdKey = field.fileIdKey || `${field.key}FileId`;
+  const fileId = record[fileIdKey] || '';
+  const mimeKey = field.mimeKey || '';
+  const mimeValue = mimeKey ? (record[mimeKey] || '') : '';
+  const dataKey = field.dataKey || 'fileData';
+  const nameKey = field.nameKey || 'fileName';
+  const accept = field.accept || 'application/pdf,image/jpeg';
+  const acceptLabel = field.acceptLabel || accept;
+  const maxKb = Number(field.maxKb || 2048);
+  const maxLabel = maxKb >= 1024 ? `${Math.round(maxKb / 1024)} MB` : `${maxKb} KB`;
+  return `
+    <div class="upload-field wide" data-upload-field data-upload-types="${escapeAttr(accept)}" data-upload-max-kb="${escapeAttr(maxKb)}" data-upload-accept-label="${escapeAttr(acceptLabel)}" data-upload-required="${field.required ? 'true' : 'false'}" data-upload-label="${escapeAttr(field.label || 'File')}">
+      <input type="hidden" name="${escapeAttr(field.key)}" value="${escapeAttr(value)}">
+      <input type="hidden" name="${escapeAttr(fileIdKey)}" value="${escapeAttr(fileId)}">
+      ${mimeKey ? `<input type="hidden" name="${escapeAttr(mimeKey)}" value="${escapeAttr(mimeValue)}" data-upload-mime>` : `<input type="hidden" name="${escapeAttr(field.mimeKey || 'fileMimeType')}" data-upload-mime>`}
+      <input type="hidden" name="${escapeAttr(dataKey)}" data-upload-data>
+      <input type="hidden" name="${escapeAttr(nameKey)}" data-upload-name>
+      <input type="file" accept="${escapeAttr(accept)}" data-photo-upload class="is-hidden">
+      <button class="btn btn-soft" type="button" data-action="choose-upload-photo">
+        <i data-lucide="image-up"></i>
+        <span>${escapeHtml(field.buttonLabel || 'Unggah File')}</span>
+      </button>
+      <small data-upload-file-name>${value ? 'File sudah tersimpan. Pilih file baru untuk mengganti.' : `${escapeHtml(acceptLabel)}. Ukuran file maksimal ${escapeHtml(maxLabel)}.`}</small>
+    </div>
+  `;
+}
+
+function buildRegionInput(field, record, required, wide) {
+  const value = record[field.key] || '';
+  const idKey = field.idKey || `${field.key}Id`;
+  const idValue = record[idKey] || '';
+  const parent = field.parent ? ` data-region-parent="${escapeAttr(field.parent)}"` : '';
+  const clear = field.clear ? ` data-region-clear="${escapeAttr(field.clear)}"` : '';
+  const placeholder = field.placeholder || `Ketik lalu pilih ${field.label.toLowerCase()}`;
+  return `
+    <label class="region-field ${wide}" data-region-field>
+      <span>${escapeHtml(field.label)}</span>
+      <input name="${escapeAttr(field.key)}" value="${escapeAttr(value)}" data-region-input data-region-level="${escapeAttr(field.level)}" data-region-required="${field.required ? 'true' : 'false'}"${parent}${clear} autocomplete="off" ${required} placeholder="${escapeAttr(placeholder)}">
+      <input type="hidden" name="${escapeAttr(idKey)}" value="${escapeAttr(idValue)}" data-region-id>
+      <div class="region-results" data-region-results></div>
+    </label>
+  `;
+}
+
+function getStudentClassOptions(jenjang) {
+  if (jenjang === 'MTs') {
+    return [7, 8, 9].flatMap(grade => 'ABCDEFGHIJ'.split('').map(letter => `${grade}${letter}`));
+  }
+  if (jenjang === 'MA') {
+    return [10, 11, 12].flatMap(grade => 'ABCDEFGHIJ'.split('').map(letter => `${grade}${letter}`));
+  }
+  const source = [
+    state.app && state.app.madrasahName,
+    state.user && state.user.madrasah,
+    state.app && state.app.creatorUnit
+  ].filter(Boolean).join(' ').toUpperCase();
+  const isMts = /\bMTSN?\b|TSANAWIYAH/.test(source);
+  const isMa = !isMts && (/\bMA[NS]?\b|ALIYAH/.test(source));
+  const grades = isMa ? [10, 11, 12] : [7, 8, 9];
+  const letters = 'ABCDEFGHIJ'.split('');
+  return grades.flatMap(grade => letters.map(letter => `${grade}${letter}`));
+}
+
+function inferJenjangFromClass(kelas) {
+  const value = String(kelas || '').trim().toUpperCase();
+  if (/^[789][A-J]$/.test(value)) return 'MTs';
+  if (/^(10|11|12)[A-J]$/.test(value)) return 'MA';
+  return '';
+}
+
+function setupStudentClassControls(form) {
+  if (!form) return;
+  form.querySelectorAll('[data-class-select]').forEach(select => {
+    const jenjangName = select.dataset.jenjangSource || 'jenjang';
+    const jenjangSelect = form.querySelector(`[name="${jenjangName}"]`);
+    const refresh = () => {
+      const current = select.value || '';
+      const options = getStudentClassOptions(jenjangSelect ? jenjangSelect.value : '');
+      select.innerHTML = '<option value="">Pilih</option>' + options.map(kelas => `<option value="${escapeAttr(kelas)}">${escapeHtml(kelas)}</option>`).join('');
+      select.value = options.includes(current) ? current : '';
+    };
+    if (jenjangSelect && jenjangSelect.dataset.classReady !== 'true') {
+      jenjangSelect.dataset.classReady = 'true';
+      jenjangSelect.addEventListener('change', refresh);
+    }
+    refresh();
+  });
+}
+
+function getSubjectOptions(jenjang) {
+  if (jenjang === 'MTs') return state.lookups.mataPelajaranMTs || [];
+  if (jenjang === 'MA') return state.lookups.mataPelajaranMA || [];
+  return [];
+}
+
+function setupSubjectControls(form) {
+  if (!form) return;
+  const studentSelect = form.querySelector('[name="studentId"]');
+  const jenjangSelect = form.querySelector('[name="jenjang"]');
+  const subjectSelects = Array.from(form.querySelectorAll('[data-subject-select]'));
+  const refreshSubjects = () => {
+    subjectSelects.forEach(select => {
+      const jenjangName = select.dataset.jenjangSource || 'jenjang';
+      const source = form.querySelector(`[name="${jenjangName}"]`);
+      const current = select.value || '';
+      const options = getSubjectOptions(source ? source.value : '');
+      select.innerHTML = '<option value="">Pilih</option>' + options.map(subject => `<option value="${escapeAttr(subject)}">${escapeHtml(subject)}</option>`).join('');
+      select.value = options.includes(current) ? current : '';
+    });
+  };
+  if (studentSelect && jenjangSelect && studentSelect.dataset.subjectReady !== 'true') {
+    studentSelect.dataset.subjectReady = 'true';
+    studentSelect.addEventListener('change', () => {
+      const student = (state.studentOptions || []).find(item => String(item.studentId || '') === String(studentSelect.value || ''));
+      if (student) {
+        jenjangSelect.value = student.jenjang || inferJenjangFromClass(student.kelas || '');
+      }
+      refreshSubjects();
+    });
+  }
+  if (jenjangSelect && jenjangSelect.dataset.subjectReady !== 'true') {
+    jenjangSelect.dataset.subjectReady = 'true';
+    jenjangSelect.addEventListener('change', refreshSubjects);
+  }
+  refreshSubjects();
+}
+
+function setupManagedFileUploads(form) {
+  if (!form) return;
+  form.querySelectorAll('[data-upload-field]').forEach(field => {
+    const input = field.querySelector('[data-photo-upload]');
+    const button = field.querySelector('[data-action="choose-upload-photo"]');
+    const dataInput = field.querySelector('[data-upload-data]');
+    const mimeInput = field.querySelector('[data-upload-mime]');
+    const nameInput = field.querySelector('[data-upload-name]');
+    const label = field.querySelector('[data-upload-file-name]');
+    const allowedTypes = String(field.dataset.uploadTypes || '').split(',').map(item => item.trim().toLowerCase()).filter(Boolean);
+    const maxKb = Number(field.dataset.uploadMaxKb || 2048);
+    const acceptLabel = field.dataset.uploadAcceptLabel || 'file yang didukung';
+    const maxLabel = maxKb >= 1024 ? `${Math.round(maxKb / 1024)} MB` : `${maxKb} KB`;
+    if (!input || !button) return;
+    button.onclick = () => input.click();
+    input.onchange = () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      if (dataInput) dataInput.value = '';
+      if (mimeInput) mimeInput.value = '';
+      if (nameInput) nameInput.value = '';
+      if (allowedTypes.length && !allowedTypes.includes(String(file.type || '').toLowerCase())) {
+        showToast(`File harus berupa ${acceptLabel}.`, true);
+        input.value = '';
+        return;
+      }
+      if (file.size > maxKb * 1024) {
+        showToast(`Ukuran file maksimal ${maxLabel}.`, true);
+        input.value = '';
+        return;
+      }
+      const reader = new FileReader();
+      reader.onerror = () => showToast('File tidak dapat dibaca.', true);
+      reader.onload = () => {
+        const dataUrl = String(reader.result || '');
+        if (dataInput) dataInput.value = dataUrl.split(',')[1] || '';
+        if (mimeInput) mimeInput.value = file.type;
+        if (nameInput) nameInput.value = file.name || 'foto-siswa';
+        if (label) label.textContent = `${file.name} siap diunggah.`;
+      };
+      reader.readAsDataURL(file);
+    };
+  });
+}
+
+function validateManagedUploads(form) {
+  if (!form) return true;
+  for (const field of Array.from(form.querySelectorAll('[data-upload-field]'))) {
+    if (field.dataset.uploadRequired !== 'true') continue;
+    const url = field.querySelector('input[type="hidden"]:not([data-upload-data]):not([data-upload-mime]):not([data-upload-name])');
+    const data = field.querySelector('[data-upload-data]');
+    if ((!url || !url.value) && (!data || !data.value)) {
+      showToast(`${field.dataset.uploadLabel || 'File'} wajib diunggah.`, true);
+      return false;
+    }
+  }
+  return true;
+}
+
+function collectForm(form) {
+  const data = Object.fromEntries(new FormData(form).entries());
+  Object.keys(data).forEach(key => {
+    if (typeof data[key] === 'string') data[key] = data[key].trim();
+  });
+  return data;
+}
+
+function labelFor(entity, key) {
+  const schema = FIELD_SCHEMAS[entity];
+  const field = schema && schema.fields.find(item => item.key === key);
+  return field ? field.label : key;
+}
+
+function escapeHtml(value) {
+  return String(value === undefined || value === null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, '&#096;');
+}
+
+function compact(value, length) {
+  const text = String(value || '');
+  if (text.length <= length) return text;
+  return text.slice(0, Math.max(0, length - 1)) + '...';
+}
+
+function formatCell(entity, key, value, row) {
+  if (key === 'fotoUrl') {
+    return value ? `<img src="${escapeAttr(value)}" alt="Foto" style="width:38px;height:46px;object-fit:cover;border-radius:6px">` : '-';
+  }
+  if (key === 'sertifikatUrl') {
+    return value ? `<a href="${escapeAttr(value)}" target="_blank" rel="noopener">Buka</a>` : '-';
+  }
+  if (key === 'linkAplikasi') {
+    return value ? `<a class="btn btn-soft btn-small" href="${escapeAttr(value)}" target="_blank" rel="noopener"><i data-lucide="external-link"></i><span>Buka Aplikasi</span></a>` : '-';
+  }
+  if (key === 'role') return roleLabel(value);
+  if (entity === 'users' && key === 'active') {
+    return String(value).toUpperCase() === 'FALSE' ? 'Tidak aktif' : 'Aktif';
+  }
+  if (key === 'studentId') {
+    const student = (state.studentOptions || []).find(item => item.studentId === value);
+    return student ? escapeHtml(student.nama) : escapeHtml(value || '-');
+  }
+  return escapeHtml(compact(value || '-', 110));
+}
+
+function uniqueClasses(rows) {
+  const source = rows || state.studentOptions || [];
+  return [...new Set(getStudentClassOptions('MTs').concat(getStudentClassOptions('MA')).concat(source.map(row => row.kelas).filter(Boolean)))]
+    .sort((a, b) => a.localeCompare(b, 'id-ID', { numeric: true }));
+}
+
+function fillClassSelect(select, rows) {
+  if (!select) return;
+  const current = select.value || '';
+  select.innerHTML = '<option value="">Semua kelas</option>' + uniqueClasses(rows).map(kelas => `<option value="${escapeAttr(kelas)}">${escapeHtml(kelas)}</option>`).join('');
+  select.value = current;
+}
+
+function normalizeHeader(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function normalizeImportRows(entity, rawRows) {
+  const schema = FIELD_SCHEMAS[entity];
+  const aliases = {};
+  schema.fields.forEach(field => {
+    if (field.type === 'hidden' || field.type === 'section') return;
+    aliases[normalizeHeader(field.key)] = field.key;
+    aliases[normalizeHeader(field.label)] = field.key;
+  });
+  return rawRows.map(raw => {
+    const row = {};
+    Object.keys(raw).forEach(header => {
+      const key = aliases[normalizeHeader(header)];
+      if (key) row[key] = String(raw[header] || '').trim();
+    });
+    return row;
+  }).filter(row => Object.values(row).some(Boolean));
+}
+
+async function readWorkbookFile(file) {
+  await ensureXlsxLoaded();
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: 'array' });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { defval: '' });
+}
+
+function ensureXlsxLoaded() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (window._sibaktiXlsxPromise) return window._sibaktiXlsxPromise;
+  window._sibaktiXlsxPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    script.async = true;
+    script.onload = () => window.XLSX
+      ? resolve(window.XLSX)
+      : reject(new Error('Library pembaca Excel tidak tersedia.'));
+    script.onerror = () => reject(new Error('Library pembaca Excel gagal dimuat. Periksa koneksi internet lalu coba lagi.'));
+    document.head.appendChild(script);
+  }).catch(err => {
+    window._sibaktiXlsxPromise = null;
+    throw err;
+  });
+  return window._sibaktiXlsxPromise;
+}
+
+function downloadTemplate(entity) {
+  const schema = FIELD_SCHEMAS[entity];
+  const headers = schema.fields.filter(field => field.type !== 'hidden' && field.type !== 'section').map(field => field.label);
+  const csv = headers.map(csvCell).join(',') + '\n';
+  downloadText(`${entity}-template.csv`, csv, 'text/csv;charset=utf-8');
+}
+
+function downloadText(filename, text, type) {
+  const blob = new Blob([text], { type: type || 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function csvCell(value) {
+  const text = String(value || '');
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+window.SIBAKTI_CORE_LOADED = true;
+window.SIBAKTI_JSCORE_READY = true;
+window.SIBAKTI_APP_READY = true;
+</script>
